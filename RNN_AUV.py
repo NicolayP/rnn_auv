@@ -299,7 +299,7 @@ def gen_imgs(t_dict, tau):
     return imgs
 
 
-def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution"):
+def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution", save=False):
     fig_state = plt.figure(figsize=(10, 10))
     axs_states = {}
     for i, name in enumerate(plot_cols):
@@ -329,6 +329,9 @@ def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution"):
     fig_state.suptitle(title, fontsize=10)
     fig_state.legend(fontsize=5)
     fig_state.tight_layout(rect=[0, 0.05, 1, 0.98])
+
+    if save:
+        fig_state.savefig(title + ".png")
 
     if fig:
         return fig_state
