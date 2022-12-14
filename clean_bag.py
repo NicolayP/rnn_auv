@@ -8,8 +8,6 @@ from bagpy import bagreader
 import shutil
 from scipy.spatial.transform import Rotation as R
 
-from manifpy import SE3, SE3Tangent
-
 import argparse
 
 renameLabelsS = {'pose.pose.position.x': "x",
@@ -19,12 +17,12 @@ renameLabelsS = {'pose.pose.position.x': "x",
                  'pose.pose.orientation.y': "qy",
                  'pose.pose.orientation.z': "qz",
                  'pose.pose.orientation.w': "qw",
-                 'twist.twist.linear.x': "Iu",
-                 'twist.twist.linear.y': "Iv",
-                 'twist.twist.linear.z': "Iw",
-                 'twist.twist.angular.x': "Ip",
-                 'twist.twist.angular.y': "Iq",
-                 'twist.twist.angular.z': "Ir"}
+                 'twist.twist.linear.x': "Su",
+                 'twist.twist.linear.y': "Sv",
+                 'twist.twist.linear.z': "Sw",
+                 'twist.twist.angular.x': "Sp",
+                 'twist.twist.angular.y': "Sq",
+                 'twist.twist.angular.z': "Sr"}
 
 renameLabelsA = {'wrench.force.x': "Fx",
                  'wrench.force.y': "Fy",
@@ -152,23 +150,36 @@ def df_traj(dfs, rds, dfa, rda, freq):
     trajS['rv1'] = rot_vec[:, 1]
     trajS['rv2'] = rot_vec[:, 2]
 
-    b_vel = get_body_vel(trajS)
-    trajS['Bu'] = b_vel[:, 0]
-    trajS['Bv'] = b_vel[:, 1]
-    trajS['Bw'] = b_vel[:, 2]
-    trajS['Bp'] = b_vel[:, 3]
-    trajS['Bq'] = b_vel[:, 4]
-    trajS['Br'] = b_vel[:, 5]
-
-    #dv = compute_dv(trajS)
-
-    #trajS['du'] = dv[:, 0]
-    #trajS['dv'] = dv[:, 1]
-    #trajS['dw'] = dv[:, 2]
+    B_vel = get_body_vel(trajS)
+    trajS['Bu'] = B_vel[:, 0]
+    trajS['Bv'] = B_vel[:, 1]
+    trajS['Bw'] = B_vel[:, 2]
+    trajS['Bp'] = B_vel[:, 3]
+    trajS['Bq'] = B_vel[:, 4]
+    trajS['Br'] = B_vel[:, 5]
     
-    #trajS['dp'] = dv[:, 3]
-    #trajS['dq'] = dv[:, 4]
-    #trajS['dr'] = dv[:, 5]
+    I_vel = get_inertial_vel(trajS)
+    trajS['Iu'] = I_vel[:, 0]
+    trajS['Iv'] = I_vel[:, 1]
+    trajS['Iw'] = I_vel[:, 2]
+    trajS['Ip'] = I_vel[:, 3]
+    trajS['Iq'] = I_vel[:, 4]
+    trajS['Ir'] = I_vel[:, 5]
+
+    Idv, Bdv = get_dv(trajS)
+    trajS['Idu'] = Idv[:, 0]
+    trajS['Idv'] = Idv[:, 1]
+    trajS['Idw'] = Idv[:, 2]
+    trajS['Idp'] = Idv[:, 3]
+    trajS['Idq'] = Idv[:, 4]
+    trajS['Idr'] = Idv[:, 5]
+
+    trajS['Bdu'] = Bdv[:, 0]
+    trajS['Bdv'] = Bdv[:, 1]
+    trajS['Bdw'] = Bdv[:, 2]
+    trajS['Bdp'] = Bdv[:, 3]
+    trajS['Bdq'] = Bdv[:, 4]
+    trajS['Bdr'] = Bdv[:, 5]
 
     traj = pd.concat([trajS, trajA], axis=1)
     return traj
@@ -201,56 +212,25 @@ def resample(df, rd, freq):
     return traj
 
 def get_body_vel(traj):
-    pose = traj.loc[:, ['x', 'y', 'z', 'rv0', 'rv1', 'rv2']].to_numpy()
-    I_vel = traj.loc[:, ['Iu', 'Iv', 'Iw', 'Ip', 'Iq', 'Ir']].to_numpy()
-    B_vel = np.zeros(shape=I_vel.shape)
-    for i, (p, Iv) in enumerate(zip(pose, I_vel)):
-        X = SE3.Identity() + SE3Tangent(p)
-        Xinv = X.inverse()
-        adj = Xinv.adj()
-        B_vel[i] = (adj @ Iv[..., None])[..., 0]
+    rotBtoI = traj.loc[:, ['r00', 'r01', 'r02', 'r10', 'r11', 'r12', 'r20', 'r21', 'r22']].to_numpy().reshape(-1, 3, 3)
+    rotItoB = np.transpose(rotBtoI, axes=(0, 2, 1))
+    Sim_lin_vel = traj.loc[:, ['Su', 'Sv', 'Sw']].to_numpy()
+    Sim_ang_vel = traj.loc[:, ['Sp', 'Sq', 'Sr']].to_numpy()
+
+    B_lin_vel = np.matmul(rotItoB, Sim_lin_vel[..., None])[..., 0]
+    B_ang_vel = np.matmul(rotItoB, Sim_ang_vel[..., None])[..., 0]
+
+    B_vel = np.concatenate([B_lin_vel, B_ang_vel], axis=-1)
     return B_vel
 
-def compute_dv(df):
-    '''
-        Compute $\DeltaV$ in lie-algebra aka at the origin.
+def get_inertial_vel(traj):
+    Sim_lin_vel = traj.loc[:, ['Su', 'Sv', 'Sw']].to_numpy()
+    Sim_ang_vel = traj.loc[:, ['Sp', 'Sq', 'Sr']].to_numpy()
+    I_ang_vel = Sim_ang_vel
 
-        inputs:
-        -------
-            - df, pd.dataframe: A dataframe containing the trajectory.
-    '''
-    vel = df.loc[:, ['u', 'v', 'w', 'p', 'q', 'r']].to_numpy()
-    adj = adjoint(df)
-    vel_I = np.matmul(adj, vel[..., None])[..., 0]
-    dv = np.zeros(shape=vel.shape)
-    # dv_{t+1} = vel_inertial_{t+1} - vel_inertial_{t}
-    dv[1:] = vel_I[1:] - vel[:-1]
-    return dv
+    t = traj.loc[:, ['x', 'y', 'z']].to_numpy()
 
-def adjoint(df):
-    r = df.loc[:, ['r00', 'r01', 'r02', 'r10', 'r11', 'r12', 'r20', 'r21', 'r22']].to_numpy().reshape((-1, 3, 3))
-    
-    rho = df.loc[:, ['x', 'y', 'z']].to_numpy()
-    rot_vec = df.loc[:, ['rv0', 'rv1', 'rv2']].to_numpy()
-
-
-    print("head: ", df.head(2))
-    exit()
-
-    print("rho:       ", rho.shape)
-    print("rot_vec:   ", rot_vec.shape)
-
-    v = v_se2(rot_vec)
-
-    print("v(theta):  ", v.shape)
-
-    # expand for matmul, reduce to get shape [k, 3]
-    t = np.matmul(v, rho[..., None])[..., 0]
-
-    print("t:         ", t.shape)
-
-
-    skewT = np.zeros((r.shape[0], 3, 3))
+    skewT = np.zeros((t.shape[0], 3, 3))
 
     skewT[:, 0, 1] = - t[:, 2]
     skewT[:, 1, 0] = t[:, 2]
@@ -261,35 +241,22 @@ def adjoint(df):
     skewT[:, 1, 2] = - t[:, 0]
     skewT[:, 2, 1] = t[:, 0]
 
-    tmp = np.matmul(skewT, r)
-    adj = np.zeros((r.shape[0], 6, 6))
-    adj[:, 0:3, 0:3] = r
-    adj[:, 3:6, 3:6] = r
-    adj[:, 0:3, 3:6] = tmp
-    return adj
+    I_lin_vel = Sim_lin_vel + np.matmul(skewT, Sim_ang_vel[..., None])[..., 0]
+    I_vel = np.concatenate([I_lin_vel, I_ang_vel], axis=-1)
 
-def v_se2(rot_vec):
-    k = rot_vec.shape[0]
-    theta_norm = np.linalg.norm(rot_vec, axis=-1)
+    return I_vel
 
-    skew_theta = np.zeros((k, 3, 3))
-    skew_theta[:, 0, 1] = -rot_vec[:, 2]
-    skew_theta[:, 1, 0] = rot_vec[:, 2]
-    skew_theta[:, 0, 2] = rot_vec[:, 2]
-    skew_theta[:, 2, 0] = -rot_vec[:, 2]
-    skew_theta[:, 1, 2] = -rot_vec[:, 2]
-    skew_theta[:, 2, 1] = rot_vec[:, 2]
+def get_dv(traj):
+    I_vel = traj.loc[:, ['Iu', 'Iv', 'Iw', 'Ip', 'Iq', 'Ir']].to_numpy()
+    Idv = np.zeros(shape=(I_vel.shape))
+    Idv[1:] = I_vel[1:] - I_vel[:-1]
 
-    skew_theta_square = np.matmul(skew_theta, skew_theta)
 
-    I = np.eye(3)
+    B_vel = traj.loc[:, ['Bu', 'Bv', 'Bw', 'Bp', 'Bq', 'Br']].to_numpy()
+    Bdv = np.zeros(shape=(B_vel.shape))
+    Bdv[1:] = B_vel[1:] - B_vel[:-1]
 
-    s = np.sin(theta_norm)
-    c = np.cos(theta_norm)
-
-    v = I + ((1-c)/np.power(theta_norm, 2))[..., None, None] * skew_theta + ((theta_norm - s)/np.power(theta_norm, 3))[..., None, None] * skew_theta_square
-
-    return v
+    return Idv, Bdv
 
 def parse_arg():
     parser = argparse.ArgumentParser(prog="clean_bags",

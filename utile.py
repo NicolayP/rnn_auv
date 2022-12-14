@@ -2,6 +2,10 @@ import torch
 from torch.nn.functional import normalize
 torch.autograd.set_detect_anomaly(True)
 
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+
 # SE2
 class ToSE2Mat(torch.nn.Module):
     def __init__(self):
@@ -373,3 +377,48 @@ class FlattenSE3(torch.nn.Module):
     
     def forward(self):
         pass
+
+
+def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution", save=False):
+    fig_state = plt.figure(figsize=(10, 10))
+    axs_states = {}
+    for i, name in enumerate(plot_cols):
+        m, n = np.unravel_index(i, (2, 3))
+        idx = 1*m + 2*n + 1
+        axs_states[name] = fig_state.add_subplot(3, 2, idx)
+    
+    for k in traj_dict:
+        t = traj_dict[k]
+        for i, name in enumerate(plot_cols):
+            axs_states[name].set_ylabel(f'{name}', fontsize=10)
+            if k == 'gt':
+                if i == 0:
+                    axs_states[name].plot(t[:tau+1, i], marker='.', zorder=-10, label=k)
+                else:
+                    axs_states[name].plot(t[:tau+1, i], marker='.', zorder=-10)
+                axs_states[name].set_xlim([0, tau+1])
+            
+            else:
+                if i == 0:
+                    axs_states[name].plot(np.arange(0, tau), t[:tau, plot_cols[name]],
+                        marker='.', label=k)
+                else:
+                    axs_states[name].plot(np.arange(0, tau), t[:tau, plot_cols[name]],
+                        marker='.')
+    fig_state.text(x=0.5, y=0.03, s="steps", fontsize=10)
+    fig_state.suptitle(title, fontsize=10)
+    fig_state.legend(fontsize=5)
+    fig_state.tight_layout(rect=[0, 0.05, 1, 0.98])
+
+    if save:
+        fig_state.savefig("img/" + title + ".png")
+
+    if fig:
+        return fig_state
+
+    canvas = FigureCanvas(fig_state)
+    canvas.draw()
+    img = np.frombuffer(canvas.tostring_rgb(), dtype='uint8')
+    img = img.reshape(fig_state.canvas.get_width_height()[::-1] + (3,))
+    plt.close('all')
+    return img

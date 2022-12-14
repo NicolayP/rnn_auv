@@ -3,7 +3,10 @@ torch.autograd.set_detect_anomaly(True)
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 import pandas as pd
-from utile import ToSE2Mat, SE2Int, SE2Adj, SE2Inv, FlattenSE2
+import pypose as pp
+
+
+#from utile import ToSE2Mat, SE2Int, SE2Adj, SE2Inv, FlattenSE2
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
@@ -331,7 +334,7 @@ def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution", sav
     fig_state.tight_layout(rect=[0, 0.05, 1, 0.98])
 
     if save:
-        fig_state.savefig(title + ".png")
+        fig_state.savefig("img/" + title + ".png")
 
     if fig:
         return fig_state
@@ -492,12 +495,12 @@ class FakeDv(torch.nn.Module):
 def integrate():
     tau = 100
     device = get_device()
-    traj_file = "test_bag_dv/new/run0.csv"
+    traj_file = "test_bag_clean/new/run0.csv"
     df = pd.read_csv(traj_file)
 
-    traj = torch.Tensor(df[['x', 'y', 'yaw', 'u', 'v', 'r']].to_numpy()).to(device)
-    act = torch.Tensor(df[['Fx', 'Fy', 'Tz']].to_numpy()).to(device)
-    traj_dv = torch.Tensor(df[['du', 'dv','dr']].to_numpy()).to(device)
+    traj = torch.Tensor(df[['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw', 'Bu', 'Bv', 'Bw', 'Bp', 'Bq', 'Br']].to_numpy()).to(device)
+    act = torch.Tensor(df[['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']].to_numpy()).to(device)
+    traj_dv = torch.Tensor(df[['Bdu', 'Bdv', 'Bdw', 'Bdp', 'Bdq','Bdr']].to_numpy()).to(device)
 
     dv_pred = FakeDv(traj_dv[None]).to(device)
 
