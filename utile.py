@@ -2,7 +2,17 @@ import torch
 from torch.nn.functional import normalize
 torch.autograd.set_detect_anomaly(True)
 
+from tqdm import tqdm
+import os
+import random
+import warnings
+
 import numpy as np
+import pandas as pd
+npdtype = np.float32
+tdtype = torch.float32
+
+
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
@@ -378,6 +388,24 @@ class FlattenSE3(torch.nn.Module):
     def forward(self):
         pass
 
+# MISC FILES
+def read_files(data_dir, files, type="train"):
+    dfs = []
+    for f in tqdm(files, desc=f"Dir {type}", ncols=150, colour="blue"):
+        csv_file = os.path.join(data_dir, f)
+        df = pd.read_csv(csv_file)
+        df = df.astype(npdtype)
+        dfs.append(df)
+    return dfs
+
+# TRAJECTORY PLOTTING
+def gen_imgs_3D(t_dict, tau):
+    plotState={"x(m)":0, "y(m)": 1, "z(m)": 2, "roll(rad)": 3, "pitch(rad)":4, "yaw(rad)": 5}
+    imgs = []
+    for t in tau:
+        imgs.append(plot_traj(t_dict, plotState, t))
+    return imgs
+
 
 def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution", save=False):
     fig_state = plt.figure(figsize=(10, 10))
@@ -422,3 +450,193 @@ def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution", sav
     img = img.reshape(fig_state.canvas.get_width_height()[::-1] + (3,))
     plt.close('all')
     return img
+
+# TRAINING AND VALIDATION
+def val_step(dataloader, model, loss, writer, epoch, device):
+    torch.autograd.set_detect_anomaly(True)
+    size = len(dataloader.dataset)
+    t = tqdm(enumerate(dataloader), desc=f"Val: {epoch}", ncols=200, colour="red", leave=False)
+    for batch, data in t:
+        X, U, Y = data
+        X, U, Y = X.to(device), U.to(device), Y.to(device)
+        pred, pred_dv = model(X, U)
+        l = loss(pred_dv, Y)
+
+        if writer is not None:
+            writer.add_scalar("val-loss/", l, epoch*size+batch)
+    
+    # Trajectories generation for validation
+    gt_trajs, gt_trajs_dv, action_seqs = dataloader.dataset.get_trajs()
+    x_init, A = torch.Tensor(gt_trajs[0][None, 0:1, ...]).to(device), torch.Tensor(action_seqs[0][None, ...]).to(device)
+    pred_trajs, pred_trajs_dv = model(x_init, A)
+    tau = [10, 20, 30, 40, 50]
+    t_dict = {"model": pred_trajs[0].detach().cpu(), "gt": gt_trajs[0]}
+    t10_i, t20_i, t30_i, t40_i, t50_i = gen_imgs(t_dict, tau)
+    t10_l, t20_l, t30_l, t40_l, t50_l = [loss(pred_trajs_dv[0, :h], torch.Tensor(gt_trajs_dv[0][:h]).to(device)) for h in tau]
+    t10_l_u, t10_l_v, t10_l_r = [loss(pred_trajs_dv[0, :10, dim], torch.Tensor(gt_trajs_dv[0][:10, dim]).to(device)) for dim in range(3)]
+    t20_l_u, t20_l_v, t20_l_r = [loss(pred_trajs_dv[0, :20, dim], torch.Tensor(gt_trajs_dv[0][:20, dim]).to(device)) for dim in range(3)]
+    t30_l_u, t30_l_v, t30_l_r = [loss(pred_trajs_dv[0, :30, dim], torch.Tensor(gt_trajs_dv[0][:30, dim]).to(device)) for dim in range(3)]
+    t40_l_u, t40_l_v, t40_l_r = [loss(pred_trajs_dv[0, :40, dim], torch.Tensor(gt_trajs_dv[0][:40, dim]).to(device)) for dim in range(3)]
+    t50_l_u, t50_l_v, t50_l_r = [loss(pred_trajs_dv[0, :50, dim], torch.Tensor(gt_trajs_dv[0][:50, dim]).to(device)) for dim in range(3)]
+
+
+    writer.add_image("traj-10", t10_i, epoch, dataformats="HWC")
+    writer.add_image("traj-20", t20_i, epoch, dataformats="HWC")
+    writer.add_image("traj-30", t30_i, epoch, dataformats="HWC")
+    writer.add_image("traj-40", t40_i, epoch, dataformats="HWC")
+    writer.add_image("traj-50", t50_i, epoch, dataformats="HWC")
+
+    writer.add_scalar("Multi-step-loss-t10/all", t10_l, epoch)
+    writer.add_scalar("Multi-step-loss-t10/u", t10_l_u, epoch)
+    writer.add_scalar("Multi-step-loss-t10/v", t10_l_v, epoch)
+    writer.add_scalar("Multi-step-loss-t10/r", t10_l_r, epoch)
+
+    writer.add_scalar("Multi-step-loss-t20/all", t20_l, epoch)
+    writer.add_scalar("Multi-step-loss-t10/u", t20_l_u, epoch)
+    writer.add_scalar("Multi-step-loss-t10/v", t20_l_v, epoch)
+    writer.add_scalar("Multi-step-loss-t10/r", t20_l_r, epoch)
+
+    writer.add_scalar("Multi-step-loss-t30/all", t30_l, epoch)
+    writer.add_scalar("Multi-step-loss-t10/u", t30_l_u, epoch)
+    writer.add_scalar("Multi-step-loss-t10/v", t30_l_v, epoch)
+    writer.add_scalar("Multi-step-loss-t10/r", t30_l_r, epoch)
+
+    writer.add_scalar("Multi-step-loss-t40/all", t40_l, epoch)
+    writer.add_scalar("Multi-step-loss-t10/u", t40_l_u, epoch)
+    writer.add_scalar("Multi-step-loss-t10/v", t40_l_v, epoch)
+    writer.add_scalar("Multi-step-loss-t10/r", t40_l_r, epoch)
+
+    writer.add_scalar("Multi-step-loss-t50/all", t50_l, epoch)
+    writer.add_scalar("Multi-step-loss-t10/u", t50_l_u, epoch)
+    writer.add_scalar("Multi-step-loss-t10/v", t50_l_v, epoch)
+    writer.add_scalar("Multi-step-loss-t10/r", t50_l_r, epoch)
+
+
+def train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir=None, ckpt_steps=2):
+    if writer is not None:
+        s = torch.Tensor(np.zeros(shape=(1, 13))).to(device)
+        s[:, 6] = 1.
+        A = torch.Tensor(np.zeros(shape=(1, 10, 3))).to(device)
+        writer.add_graph(model, (s, A))
+    size = len(ds[0].dataset)
+    l = np.nan
+    cur = 0
+    t = tqdm(range(epochs), desc="Training", ncols=150, colour="blue",
+     postfix={"loss": f"Loss: {l:>7f} [{cur:>5d}/{size:>5d}]"})
+    for e in t:
+        l, cur = train_step(ds[0], model, loss_fc, optim, writer, e, device)
+        if (e % ckpt_steps == 0) and ckpt_dir is not None:
+            val_step(ds[1], model, loss_fc, writer, e, device)
+            tmp_path = os.path.join(ckpt_dir, f"step_{e}.pth")
+            torch.save(model.state_dict(), tmp_path)
+        t.set_postfix({"loss": f"Loss: {l:>7f} [{cur:>5d}/{size:>5d}]"})
+
+        if writer is not None:
+            writer.flush()
+
+
+def train_step(dataloader, model, loss, optim, writer, epoch, device):
+    #print("\n", "="*5, "Training", "="*5)
+    torch.autograd.set_detect_anomaly(True)
+    size = len(dataloader.dataset)
+    model.train()
+    t = tqdm(enumerate(dataloader), desc=f"Epoch: {epoch}", ncols=200, colour="red", leave=False)
+    for batch, data in t:
+        X, U, Y = data
+        X, U, Y = X.to(device), U.to(device), Y.to(device)
+        pred, pred_dv = model(X, U)
+        optim.zero_grad()
+        l = loss(pred_dv, Y)
+        l.backward()
+        optim.step()
+
+        if writer is not None:
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    writer.add_histogram("train/" + name, param, epoch*size+batch)
+                for dim in range(3):
+                    loss_dim = loss(pred_dv[..., dim], Y[..., dim])
+                    writer.add_scalar("dv-split-loss/" + str(dim), loss_dim, epoch*size+batch)
+                writer.add_scalar("train-loss/", l, epoch*size+batch)
+
+    return l.item(), batch*len(X)
+
+# DATASET FOR 3D DATA
+class DatasetList3D(torch.utils.data.Dataset):
+    def __init__(self, data_list, steps=1, frame="Body"):
+        super(DatasetList3D, self).__init__()
+        self.data_list = data_list
+        self.s = steps
+        if frame == "Body":
+            prefix = "B"
+        elif frame == "Inertial":
+            prefix = "I"
+
+        self.pos = ['x', 'y', "z"]
+        self.rot = ['r00', 'r01', 'r02',
+                    'r10', 'r11', 'r12',
+                    'r20', 'r21', 'r22']
+        self.lin_vel = ['Bu', 'Bv', 'Bw']
+        self.ang_vel = ['Bp', 'Bq', 'Br']
+
+        self.x_labels = self.pos + self.rot + self.lin_vel + self.ang_vel
+
+        self.y_labels = [
+            f'{prefix}du', f'{prefix}dv', f'{prefix}dw',
+            f'{prefix}dp', f'{prefix}dq' f'{prefix}dr'
+        ]
+        self.u_labels = ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']
+
+        self.samples = [traj.shape[0] - self.s for traj in data_list]
+        self.len = sum(self.samples)
+        self.bins = self.create_bins()
+
+    def __len__(self):
+        return self.len
+
+    def __getitem__(self, idx):
+        i = (np.digitize([idx], self.bins)-1)[0]
+        traj = self.data_list[i]
+        j = idx - self.bins[i]
+        sub_frame = traj.iloc[j:j+self.s+1]
+        x = sub_frame[self.x_labels].to_numpy()
+        x = x[:1]
+
+        u = sub_frame[self.u_labels].to_numpy()
+        u = u[:self.s]
+
+        y = sub_frame[self.y_labels].to_numpy()
+        y = y[1:1+self.s]
+        return x, u, y
+
+    @property
+    def nb_trajs(self):
+        return len(self.data_list)
+    
+    def get_traj(self, idx):
+        if idx >= self.nb_trajs:
+            raise IndexError
+        return self.data_list[idx][self.x_labels].to_numpy()
+    
+    def create_bins(self):
+        bins = [0]
+        cummul = 0
+        for s in self.samples:
+            cummul += s
+            bins.append(cummul)
+        return bins
+
+    def get_trajs(self):
+        traj_list = []
+        dv_traj_list = []
+        action_seq_list = []
+        for data in self.data_list:
+            traj = data[self.x_labels].to_numpy()
+            traj_list.append(traj)
+
+            dv_traj = data[self.y_labels].to_numpy()
+            dv_traj_list.append(dv_traj)
+
+            action_seq = data[self.u_labels].to_numpy()
+            action_seq_list.append(action_seq)
+        return traj_list, dv_traj_list, action_seq_list

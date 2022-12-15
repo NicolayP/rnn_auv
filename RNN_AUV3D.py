@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
 
+from utile import read_files, DatasetList3D, train
+
 from tqdm import tqdm
 import os
 import random
@@ -23,6 +25,10 @@ import time
 
 
 class AUVRNNDeltaVProxy(torch.nn.Module):
+    '''
+        Proxy for the RNN part of the network. Used to ensure that
+        the integration using PyPose is correct.
+    '''
     def __init__(self, dv):
         super(AUVRNNDeltaVProxy, self).__init__()
         self._dv = dv
@@ -34,18 +40,71 @@ class AUVRNNDeltaVProxy(torch.nn.Module):
 
 
 class AUVRNNDeltaV(torch.nn.Module):
-    def __init__(self):
+    '''
+        RNN predictor for $\delta v$.
+
+        parameters:
+        -----------
+            - rnn_layer:
+            - rnn_hidden_size:
+            - bias: Whether or not to apply bias to the FC units. (default False)
+    '''
+    def __init__(self, bias=False, rnn_hidden_size=5, rnn_layers=1):
         super(AUVRNNDeltaV, self).__init__()
+
+        self.input_size = 9 + 6 + 6 # rotation matrix + velocities + action
+        self.output_size = 6
+        self.rnn_layers = rnn_layers
+        self.rnn_hidden_size = rnn_hidden_size
+
+        self.rnn = torch.nn.RNN(
+            input_size=self.input_size,
+            hidden_size=rnn_hidden_size,
+            num_layers=rnn_layers,
+            batch_first=True,
+            bias=bias
+        )
+
+        fc_layers = [
+            torch.nn.Linear(rnn_hidden_size, 32, bias=bias),
+            torch.nn.LeakyReLU(negative_slope=0.1),
+            torch.nn.Linear(32, self.output_size, bias=bias)
+        ]
+        self.fc = torch.nn.Sequential(*fc_layers)
     
     def forward(self, x, v, a, h0=None):
-        pass
+        k = x.shape[0]
+        r = x.rotation().matrix().flatten(start_dim=-2)
+        input = torch.concat([r, v, a], dim=-1)
+
+        # change shape from [k, features] to [k, t, features]
+        # where t=1 is the sequence length needed for rnn
+        input_seq = input[:, None]
+
+        if h0 is None:
+            h0 = self.init_hidden(k, input.device)
+
+        out, hN = self.rnn(input_seq, h0)
+        dv = self.fc(out[:, 0])
+
+        return dv, hN
+
+    def init_hidden(self, k, device):
+        return torch.zeros(self.rnn_layers, k, self.rnn_hidden_size).to(device)
 
 
 class AUVStep(torch.nn.Module):
-    def __init__(self, dt=0.1):
+    def __init__(self, dt=0.1, dv_frame="body"):
         super(AUVStep, self).__init__()
         self.dv_pred = AUVRNNDeltaV()
         self.dt = dt
+        self.dv_frame = dv_frame
+
+        if self.dv_frame == "body":
+            self.forward = self.forward_body
+        elif self.dv_frame == "world":
+            self.forward = self.forward_inertial
+        
     
     def forward(self, x, v, a, h0=None):
         '''
@@ -69,7 +128,21 @@ class AUVStep(torch.nn.Module):
                     The next velocity. Shape [k, 6]
                 - h_next, 
         '''
-        dv, h_next = self.dv_pred(x, v, a, h0)
+        pass                                                                
+
+    def forward_body(self, x, v, a, h0=None):
+        Bdv, h_next = self.dv_pred(x, v, a, h0)
+        # compute displacement.
+        t = v*self.dt
+        # Update pose using right \oplus operator as we assume
+        # the velocity to be in body frame.
+        x_next = x * pp.se3(t).Exp()
+        # Update the velocity.
+        v_next = v + Bdv
+        return x_next, v_next, Bdv, h_next
+
+    def forward_inertial(self, x, v, a, h0=None):
+        Idv, h_next = self.dv_pred(x, v, a, h0)
         # Compute the displacement.
         t = v*self.dt
         # Update pose using right \oplus operator as we assume the 
@@ -79,18 +152,18 @@ class AUVStep(torch.nn.Module):
         # Bring the current velocity in the lie algebra
         I_v = x.Adj(v)
         # Add the velocity delta (assumed in world frame)
-        I_v_next = I_v + dv
+        I_v_next = I_v + Idv
         # Revert the new velocity back into the body frame.
         v_next = x.Inv().Adj(I_v_next)
-        return x_next, v_next, dv, h_next
+        return x_next, v_next, Idv, h_next
 
 
 class AUVTraj(torch.nn.Module):
     def __init__(self):
         super(AUVTraj, self).__init__()
-        self.step = AUVStep()
+        self.step = AUVStep(dv_frame="body")
 
-    def forward(self, p, v, A):
+    def forward(self, s, A):
         '''
             Generates a trajectory using a Inital State (pose + velocity) combined
             with an action sequence.
@@ -116,21 +189,19 @@ class AUVTraj(torch.nn.Module):
         k = A.shape[0]
         tau = A.shape[1]
         h = None
-        traj = torch.zeros(size=(k, tau+1, 7)).to(p.device)
-        traj[:, 0] = p
-        traj_v = torch.zeros(size=(k, tau+1, 6)).to(p.device)
-        traj_v[:, 0] = v
-        traj_dv = torch.zeros(size=(k, tau+1, 6)).to(p.device)
+        p = s[:, :7]
+        v = s[:, 7:]
+        traj = torch.zeros(size=(k, tau, 7+6)).to(p.device)
+        traj_dv = torch.zeros(size=(k, tau, 6)).to(p.device)
         
         x = pp.SE3(p).to(p.device)
 
         for i in range(tau):
             x_next, v_next, dv, h_next = self.step(x, v, A[:, i], h)
             x, v, h = x_next, v_next, h_next
-            traj[:, i+1] = x.data
-            traj_v[:, i+1] = v
-            traj_dv[:, i+1] = dv
-        return traj, traj_v, traj_dv
+            traj[:, i] = torch.concat([x.data, v], axis=-1)
+            traj_dv[:, i] = dv
+        return traj, traj_dv
 
 
 def get_device(gpu=False):
@@ -153,46 +224,124 @@ def to_euler(traj):
 
 def integrate():
     tau = 300
-    device = get_device()
+    device = get_device(gpu=True)
     dir = 'test_data_clean/csv/'
     files = [os.path.join(dir, f) for f in os.listdir(dir)]
+    trajs = []
+    trajs_plot = []
+    vels = []
+    acts = []
+    Idvs = []
+    Bdvs = []
+
     for f in files:
         df = pd.read_csv(f)
+        trajs.append(torch.Tensor(df[['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw']].to_numpy())[None])
+        trajs_plot.append(df[['x', 'y', 'z', 'roll', 'pitch', 'yaw']].to_numpy()[None])
+        vels.append(torch.Tensor(df[['Bu', 'Bv', 'Bw', 'Bp', 'Bq', 'Br']].to_numpy())[None])
+        acts.append(torch.Tensor(df[['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']].to_numpy())[None])
+        Idvs.append(torch.Tensor(df[['Idu', 'Idv', 'Idw', 'Idp', 'Idq', 'Idr']].to_numpy())[None])
+        Bdvs.append(torch.Tensor(df[['Bdu', 'Bdv', 'Bdw', 'Bdp', 'Bdq', 'Bdr']].to_numpy())[None])
 
-        traj = torch.Tensor(df[['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw']].to_numpy())
-        traj_plot = torch.Tensor(df[['x', 'y', 'z', 'roll', 'pitch', 'yaw']].to_numpy())
-        vels = torch.Tensor(df[['Bu', 'Bv', 'Bw', 'Bp', 'Bq', 'Br']].to_numpy())
-        act = torch.Tensor(df[['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']].to_numpy())
-        Idv = torch.Tensor(df[['Idu', 'Idv', 'Idw', 'Idp', 'Idq', 'Idr']].to_numpy())
-        Bdv = torch.Tensor(df[['Bdu', 'Bdv', 'Bdw', 'Bdp', 'Bdq', 'Bdr']].to_numpy())
+    trajs = torch.concat(trajs, dim=0).to(device)
+    trajs_plot = np.concatenate(trajs_plot, axis=-1)
+    vels = torch.concat(vels, dim=0).to(device)
+    acts = torch.concat(acts, dim=0).to(device)
+    Idvs = torch.concat(Idvs, dim=0).to(device)
+    Bdvs = torch.concat(Bdvs, dim=0).to(device)
 
-        dv_pred = AUVRNNDeltaVProxy(Idv[None]).to(device)
+    #dv_pred = AUVRNNDeltaVProxy(Bdvs).to(device)
+    #dv_pred = AUVRNNDeltaV().to(device)
 
-        step = AUVStep().to(device)
-        step.dv_pred = dv_pred
+    #step = AUVStep(dv_frame="body").to(device)
+    #step.dv_pred = dv_pred
 
-        pred = AUVTraj().to(device)
-        pred.step = step
+    pred = AUVTraj().to(device)
+    #pred.step = step
+
+    input = torch.concat([trajs[:, 0], vels[:, 0]], dim=-1)
+
+    log_path = "train_log/"
+    if not os.path.exists(log_path):
+        os.makedirs(log_path)
+    writer = SummaryWriter(log_path)
+
+    writer.add_graph(pred, (input, acts[:, :2]))
+
+    print(input.shape)
+    print(acts[:, :-1].shape)
+
+    s = time.time()
+    pred_trajs, pred_dvs = pred(input, acts[:, :-1])
+    e = time.time()
+    print(f"Prediction time: {e-s}")
+
+    pred_trajs, pred_dvs = pred_trajs.detach().cpu(), pred_dvs.detach().cpu()
+    trajs, vels, Idvs, Bdvs = trajs.cpu(), vels.cpu(), Idvs.cpu(), Bdvs.cpu()
+
+    pred_vs = pred_trajs[..., -6:]
+    pred_trajs = pred_trajs[..., :-6]
+
+    # plotting
+    pred_traj_euler = to_euler(pred_trajs[0])
+    traj_euler = trajs_plot[0]
+    s_col = {"x": 0, "y": 1, "z": 2, "roll": 3, "pitch": 4, "yaw": 5}
+    plot_traj({"pred": pred_traj_euler, "gt": traj_euler}, s_col, tau, True)
+    v_col = {"u": 0, "v": 1, "w": 2, "p": 3, "q": 4, "r": 5}
+    plot_traj({"pred": pred_vs[0], "gt": vels[0]}, v_col, tau, True)
+    dv_col = {"Bdu": 0, "Bdv": 1, "Bdw": 2, "Bdp": 3, "Bdq": 4, "Bdr": 5}
+    plot_traj({"pred": pred_dvs[0], "gt": Bdvs[0]}, dv_col, tau, True)
+    plt.show()
+    
+
+    return
 
 
-        s = time.time()
-        pred_traj, pred_v, pred_dv = pred(traj[None, 0], vels[None, 0], act[None, :-1])
-        e = time.time()
-        print(f"Prediction time: {e-s}")
+def training():
+    data_dir = 'test_data_clean/2csv/'
+    dir_name = os.path.basename(data_dir)
+    files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
+    random.shuffle(files)
 
-        pred_traj_euler = to_euler(pred_traj.numpy()[0])
+    # split train and val in 70-30 ration
+    train_size = int(0.7*len(files))
+    
+    train_files = files[:train_size]
+    val_files = files[train_size:]
 
-        t_dict = {'x': 0, 'y': 1, 'z': 2, 'roll': 3, 'pitch': 4, 'yaw': 5}
-        plot_traj({"Traj": traj_plot, "Pred": pred_traj_euler}, t_dict, tau, True)
-        v_dict = {'Bu': 0, 'Bv': 1, 'Bw': 2, 'Bp': 3, 'Bq': 4, 'Br': 5}
-        plot_traj({"Vel": vels, "Pred_vel": pred_v[0]}, v_dict, tau, True, "Velocity")
-        #a_dict = {'Fx': 0, 'Fy': 1, 'Fz': 2, 'Tx': 3, 'Ty': 4, 'Tz': 5}
-        #plot_traj({"Act": act}, a_dict, tau, True, "Action")
-        dv_dict = {'Idu': 0, 'Idv': 1, 'Idw': 2, 'Idp': 3, 'Idq': 4, 'Idr': 5}
-        plot_traj({"Idv": Idv, "Pred_Idv": pred_dv[0]}, dv_dict, tau, True, "Velocity delta")
-        
-        plt.show()
+    print("Data size:  ", len(files))
+    print("Train size: ", len(train_files))
+    print("Val size:   ", len(val_files))
 
+    dfs_train = read_files(data_dir, train_files, "train")
+    dataset_train = DatasetList3D(dfs_train, steps=10)
+
+    dfs_val = read_files(data_dir, val_files, "val")
+    dataset_val = DatasetList3D(dfs_val, steps=10)
+
+    train_params = {"batch_size": 2048, "shuffle": True, "num_workers": 8}
+
+    ds = (
+        torch.utils.data.DataLoader(dataset_train, **train_params),
+        torch.utils.data.DataLoader(dataset_val, **train_params)
+    )
+
+    log_path = "train_log/"
+    if not os.path.exists(log_path):
+        os.makedirs(log_path)
+    writer = SummaryWriter(log_path)
+
+    ckpt_dir = "train_log/train_ckpt/"
+    if not os.path.exists(ckpt_dir):
+        os.makedirs(ckpt_dir)
+
+    device = get_device(True)
+    model = AUVTraj().to(device)
+    loss_fc = torch.nn.MSELoss().to(device)
+    optim = torch.optim.Adam(model.parameters())
+    epochs = 1
+
+    train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir)
 
 
 if __name__ == "__main__":
