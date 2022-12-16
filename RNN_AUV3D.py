@@ -332,7 +332,7 @@ def training():
     dir_name = os.path.basename(data_dir)
     files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
     random.shuffle(files)
-    files = random.choice(files, nb_files)
+    files = random.choice(files, k=nb_files)
 
     # split train and val in 70-30 ration
     train_size = int(0.7*len(files))
