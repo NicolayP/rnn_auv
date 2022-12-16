@@ -13,8 +13,6 @@ import random
 random.seed(0)
 import warnings
 
-from scipy.spatial.transform import Rotation as R
-
 npdtype = np.float32
 tdtype = torch.float32
 
@@ -36,7 +34,7 @@ class AUVRNNDeltaVProxy(torch.nn.Module):
     
     def forward(self, x, v, a, h0=None):
         self.i += 1
-        return self._dv[:, self.i], None
+        return self._dv[:, self.i:self.i+1], None
 
 
 class AUVRNNDeltaV(torch.nn.Module):
@@ -73,21 +71,31 @@ class AUVRNNDeltaV(torch.nn.Module):
         self.fc = torch.nn.Sequential(*fc_layers)
     
     def forward(self, x, v, a, h0=None):
+        # print("\t\t", "="*5, "DELTA V", "="*5)
+
         k = x.shape[0]
         r = x.rotation().matrix().flatten(start_dim=-2)
-        input = torch.concat([r, v, a], dim=-1)
+        input_seq = torch.concat([r, v, a], dim=-1)
 
-        # change shape from [k, features] to [k, t, features]
-        # where t=1 is the sequence length needed for rnn
-        input_seq = input[:, None]
+        # print("\t\tx:         ", x.shape)
+        # print("\t\tr:         ", r.shape)
+        # print("\t\tv:         ", v.shape)
+        # print("\t\ta:         ", a.shape)
 
         if h0 is None:
-            h0 = self.init_hidden(k, input.device)
+            h0 = self.init_hidden(k, x.device)
+
+        
+        # print("\t\tinput_seq: ", input_seq.shape)
+        # print("\t\th0:        ", h0.shape)
 
         out, hN = self.rnn(input_seq, h0)
+        # print("\t\tout:       ", out.shape)
+        # print("\t\thN:        ", hN.shape)
         dv = self.fc(out[:, 0])
+        # print("\t\tdv:        ", dv.shape)
 
-        return dv, hN
+        return dv[:, None], hN
 
     def init_hidden(self, k, device):
         return torch.zeros(self.rnn_layers, k, self.rnn_hidden_size).to(device)
@@ -104,8 +112,7 @@ class AUVStep(torch.nn.Module):
             self.forward = self.forward_body
         elif self.dv_frame == "world":
             self.forward = self.forward_inertial
-        
-    
+
     def forward(self, x, v, a, h0=None):
         '''
             Predicts next state (x_next, v_next) from (x, v, a, h0)
@@ -131,14 +138,29 @@ class AUVStep(torch.nn.Module):
         pass                                                                
 
     def forward_body(self, x, v, a, h0=None):
+        # print("\t", "="*5, "AUV STEP", "="*5)
+        # print("\tx:      ", x.shape)
+        # print("\tv:      ", v.shape)
+        # print("\tA:      ", a.shape)
+        
+        #print("h:      ", h0.shape)
         Bdv, h_next = self.dv_pred(x, v, a, h0)
+
+        #print("\tBdv:    ", Bdv.shape)
+        #print("\th_next: ", h_next.shape)
         # compute displacement.
         t = v*self.dt
+
+        #print("\tt:      ", t.shape)
         # Update pose using right \oplus operator as we assume
         # the velocity to be in body frame.
         x_next = x * pp.se3(t).Exp()
-        # Update the velocity.
+
+        #print("\tx_next: ", x_next.shape)
+        # Update the velocity.0
         v_next = v + Bdv
+
+        # print("\tv_next: ", v_next.shape)
         return x_next, v_next, Bdv, h_next
 
     def forward_inertial(self, x, v, a, h0=None):
@@ -189,18 +211,30 @@ class AUVTraj(torch.nn.Module):
         k = A.shape[0]
         tau = A.shape[1]
         h = None
-        p = s[:, :7]
-        v = s[:, 7:]
+        p = s[..., :7]
+        v = s[..., 7:]
         traj = torch.zeros(size=(k, tau, 7+6)).to(p.device)
         traj_dv = torch.zeros(size=(k, tau, 6)).to(p.device)
         
         x = pp.SE3(p).to(p.device)
 
         for i in range(tau):
-            x_next, v_next, dv, h_next = self.step(x, v, A[:, i], h)
+            #print("="*5, "Step", "="*5)
+            #print("x:      ", x.shape)
+            #print("v:      ", v.shape)
+            #print("A:      ", A[:, i:i+1].shape)
+            #print("h:      ", h.shape)
+            # i:i+1 is to keep the dimension to match other inputs
+            x_next, v_next, dv, h_next = self.step(x, v, A[:, i:i+1], h)
+
+            #print("x_next: ", x.shape)
+            #print("v_next: ", v.shape)
+            #print("dv:     ", dv.shape)
+            #print("h_next: ", h_next.shape)
+
             x, v, h = x_next, v_next, h_next
-            traj[:, i] = torch.concat([x.data, v], axis=-1)
-            traj_dv[:, i] = dv
+            traj[:, i:i+1] = torch.concat([x.data, v], axis=-1)
+            traj_dv[:, i:i+1] = dv
         return traj, traj_dv
 
 
@@ -211,15 +245,6 @@ def get_device(gpu=False):
         if not use_cuda:
             warnings.warn("Asked for GPU but torch couldn't find a Cuda capable device")
     return torch.device("cuda:0" if use_cuda else "cpu")
-
-
-def to_euler(traj):
-    # assume quaternion representation
-    p = traj[:, :3]
-    q = traj[:, 3:]
-    r = R.from_quat(q)
-    e = r.as_euler('xyz')
-    return np.concatenate([p, e], axis=-1)
 
 
 def integrate():
@@ -259,7 +284,11 @@ def integrate():
     pred = AUVTraj().to(device)
     #pred.step = step
 
-    input = torch.concat([trajs[:, 0], vels[:, 0]], dim=-1)
+    input = torch.concat([trajs[:, :1], vels[:, :1]], dim=-1)
+
+    print("input: ", input.shape)
+    print("acts:  ", acts[:, :2].shape)
+    pred(input, acts[:, :-1])
 
     log_path = "train_log/"
     if not os.path.exists(log_path):
@@ -345,5 +374,5 @@ def training():
 
 
 if __name__ == "__main__":
-    integrate()
+    training()
     

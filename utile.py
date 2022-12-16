@@ -16,6 +16,8 @@ tdtype = torch.float32
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
+from scipy.spatial.transform import Rotation as R
+
 # SE2
 class ToSE2Mat(torch.nn.Module):
     def __init__(self):
@@ -399,12 +401,29 @@ def read_files(data_dir, files, type="train"):
     return dfs
 
 # TRAJECTORY PLOTTING
-def gen_imgs_3D(t_dict, tau):
+def gen_imgs_3D(t_dict, v_dict, dv_dict=None, tau=100):
+    '''
+    Plots trajectories with euler representation and velocity profiles from 
+    the trajectory and velocity dictionaries respectively.
+    The trajectories are plotted with length tau
+    '''
     plotState={"x(m)":0, "y(m)": 1, "z(m)": 2, "roll(rad)": 3, "pitch(rad)":4, "yaw(rad)": 5}
-    imgs = []
+    plotVels={"u(m/s)":0, "v(m/s)": 1, "w(m/s)": 2, "p(rad/s)": 3, "q(rad/s)": 4, "r(rad/s)": 5}
+    plotDVels={"du(m/s)":0, "dv(m/s)": 1, "dw(m/s)": 2, "dp(rad/s)": 3, "dq(rad/s)": 4, "dr(rad/s)": 5}
+    t_imgs = []
+    v_imgs = []
+    if dv_dict is not None:
+        dv_imgs = []
     for t in tau:
-        imgs.append(plot_traj(t_dict, plotState, t))
-    return imgs
+        t_imgs.append(plot_traj(t_dict, plotState, t))
+        v_imgs.append(plot_traj(v_dict, plotVels, t, title="Velcoity Profiles"))
+        if dv_dict is not None:
+            dv_imgs.append(plot_traj(dv_dict, plotDVels, t, title="Delta V"))
+
+    if dv_dict is not None:
+        return t_imgs, v_imgs, dv_imgs
+
+    return t_imgs, v_imgs, dv_imgs
 
 
 def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution", save=False):
@@ -451,6 +470,15 @@ def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution", sav
     plt.close('all')
     return img
 
+
+def to_euler(traj):
+    # assume quaternion representation
+    p = traj[..., :3]
+    q = traj[..., 3:]
+    r = R.from_quat(q)
+    e = r.as_euler('xyz')
+    return np.concatenate([p, e], axis=-1)
+
 # TRAINING AND VALIDATION
 def val_step(dataloader, model, loss, writer, epoch, device):
     torch.autograd.set_detect_anomaly(True)
@@ -467,56 +495,53 @@ def val_step(dataloader, model, loss, writer, epoch, device):
     
     # Trajectories generation for validation
     gt_trajs, gt_trajs_dv, action_seqs = dataloader.dataset.get_trajs()
-    x_init, A = torch.Tensor(gt_trajs[0][None, 0:1, ...]).to(device), torch.Tensor(action_seqs[0][None, ...]).to(device)
+    
+    x_init = torch.Tensor(gt_trajs[0][None, 0:1, ...]).to(device)
+    A = torch.Tensor(action_seqs[0][None, ...]).to(device)
+
     pred_trajs, pred_trajs_dv = model(x_init, A)
+
     tau = [10, 20, 30, 40, 50]
-    t_dict = {"model": pred_trajs[0].detach().cpu(), "gt": gt_trajs[0]}
-    t10_i, t20_i, t30_i, t40_i, t50_i = gen_imgs(t_dict, tau)
-    t10_l, t20_l, t30_l, t40_l, t50_l = [loss(pred_trajs_dv[0, :h], torch.Tensor(gt_trajs_dv[0][:h]).to(device)) for h in tau]
-    t10_l_u, t10_l_v, t10_l_r = [loss(pred_trajs_dv[0, :10, dim], torch.Tensor(gt_trajs_dv[0][:10, dim]).to(device)) for dim in range(3)]
-    t20_l_u, t20_l_v, t20_l_r = [loss(pred_trajs_dv[0, :20, dim], torch.Tensor(gt_trajs_dv[0][:20, dim]).to(device)) for dim in range(3)]
-    t30_l_u, t30_l_v, t30_l_r = [loss(pred_trajs_dv[0, :30, dim], torch.Tensor(gt_trajs_dv[0][:30, dim]).to(device)) for dim in range(3)]
-    t40_l_u, t40_l_v, t40_l_r = [loss(pred_trajs_dv[0, :40, dim], torch.Tensor(gt_trajs_dv[0][:40, dim]).to(device)) for dim in range(3)]
-    t50_l_u, t50_l_v, t50_l_r = [loss(pred_trajs_dv[0, :50, dim], torch.Tensor(gt_trajs_dv[0][:50, dim]).to(device)) for dim in range(3)]
+    t_dict = {
+        "model": to_euler(pred_trajs[0, :, :7].detach().cpu()),
+        "gt": to_euler(gt_trajs[0][:, :7])
+    }
+    v_dict = {
+        "model": pred_trajs[0, :, -6:].detach().cpu(),
+        "gt": gt_trajs[0][:, -6:]
+    }
+    dv_dict = {
+        "model": pred_trajs_dv[0].detach().cpu(),
+        "gt": gt_trajs_dv[0]
+    }
+
+    t_imgs, v_imgs, dv_imgs = gen_imgs_3D(t_dict, v_dict, dv_dict, tau=tau)
+
+    dv_losses = [loss(pred_trajs_dv[0, :h], torch.Tensor(gt_trajs_dv[0][:h]).to(device)) for h in tau]
+    dv_losses_split = [[loss(pred_trajs_dv[0, :h, dim], torch.Tensor(gt_trajs_dv[0][:h, dim]).to(device)) for dim in range(6)] for h in tau]
+    
+    # Log Trajs
+    for t_img, t in zip(t_imgs, tau):
+        writer.add_image(f"traj-{t}", t_img, epoch, dataformats="HWC")
+    # Log Vels
+    for v_img, t in zip(v_imgs, tau):
+        writer.add_image(f"vel-{t}", v_img, epoch, dataformats="HWC")
+    # Log dv
+    for dv_img, t in zip(dv_imgs, tau):
+        writer.add_image(f"dv-{t}", dv_img, epoch, dataformats="HWC")
 
 
-    writer.add_image("traj-10", t10_i, epoch, dataformats="HWC")
-    writer.add_image("traj-20", t20_i, epoch, dataformats="HWC")
-    writer.add_image("traj-30", t30_i, epoch, dataformats="HWC")
-    writer.add_image("traj-40", t40_i, epoch, dataformats="HWC")
-    writer.add_image("traj-50", t50_i, epoch, dataformats="HWC")
-
-    writer.add_scalar("Multi-step-loss-t10/all", t10_l, epoch)
-    writer.add_scalar("Multi-step-loss-t10/u", t10_l_u, epoch)
-    writer.add_scalar("Multi-step-loss-t10/v", t10_l_v, epoch)
-    writer.add_scalar("Multi-step-loss-t10/r", t10_l_r, epoch)
-
-    writer.add_scalar("Multi-step-loss-t20/all", t20_l, epoch)
-    writer.add_scalar("Multi-step-loss-t10/u", t20_l_u, epoch)
-    writer.add_scalar("Multi-step-loss-t10/v", t20_l_v, epoch)
-    writer.add_scalar("Multi-step-loss-t10/r", t20_l_r, epoch)
-
-    writer.add_scalar("Multi-step-loss-t30/all", t30_l, epoch)
-    writer.add_scalar("Multi-step-loss-t10/u", t30_l_u, epoch)
-    writer.add_scalar("Multi-step-loss-t10/v", t30_l_v, epoch)
-    writer.add_scalar("Multi-step-loss-t10/r", t30_l_r, epoch)
-
-    writer.add_scalar("Multi-step-loss-t40/all", t40_l, epoch)
-    writer.add_scalar("Multi-step-loss-t10/u", t40_l_u, epoch)
-    writer.add_scalar("Multi-step-loss-t10/v", t40_l_v, epoch)
-    writer.add_scalar("Multi-step-loss-t10/r", t40_l_r, epoch)
-
-    writer.add_scalar("Multi-step-loss-t50/all", t50_l, epoch)
-    writer.add_scalar("Multi-step-loss-t10/u", t50_l_u, epoch)
-    writer.add_scalar("Multi-step-loss-t10/v", t50_l_v, epoch)
-    writer.add_scalar("Multi-step-loss-t10/r", t50_l_r, epoch)
-
+    name = ["u", "v", "w", "p", "q", "r"]
+    for dv_loss, dv_loss_split, t in zip(dv_losses, dv_losses_split, tau):
+        writer.add_scalar(f"Multi-step-loss-t{t}/all", dv_loss, epoch)
+        for d in range(6):
+            writer.add_scalar(f"Multi-step-loss-t{t}/{name[d]}", dv_loss_split[d], epoch)
 
 def train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir=None, ckpt_steps=2):
     if writer is not None:
-        s = torch.Tensor(np.zeros(shape=(1, 13))).to(device)
-        s[:, 6] = 1.
-        A = torch.Tensor(np.zeros(shape=(1, 10, 3))).to(device)
+        s = torch.Tensor(np.zeros(shape=(1, 1, 13))).to(device)
+        s[..., 6] = 1.
+        A = torch.Tensor(np.zeros(shape=(1, 10, 6))).to(device)
         writer.add_graph(model, (s, A))
     size = len(ds[0].dataset)
     l = np.nan
@@ -544,6 +569,7 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
     for batch, data in t:
         X, U, Y = data
         X, U, Y = X.to(device), U.to(device), Y.to(device)
+        
         pred, pred_dv = model(X, U)
         optim.zero_grad()
         l = loss(pred_dv, Y)
@@ -563,7 +589,7 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
 
 # DATASET FOR 3D DATA
 class DatasetList3D(torch.utils.data.Dataset):
-    def __init__(self, data_list, steps=1, frame="Body"):
+    def __init__(self, data_list, steps=1, frame="Body", rot="quat"):
         super(DatasetList3D, self).__init__()
         self.data_list = data_list
         self.s = steps
@@ -573,9 +599,15 @@ class DatasetList3D(torch.utils.data.Dataset):
             prefix = "I"
 
         self.pos = ['x', 'y', "z"]
-        self.rot = ['r00', 'r01', 'r02',
-                    'r10', 'r11', 'r12',
-                    'r20', 'r21', 'r22']
+        # used for our SE3 implementation.
+        if rot == "rot":
+            self.rot = ['r00', 'r01', 'r02',
+                        'r10', 'r11', 'r12',
+                        'r20', 'r21', 'r22']
+        # Used in pypose implementation.
+        elif rot == "quat":
+            self.rot = ['qx', 'qy', 'qz', 'qw']
+
         self.lin_vel = ['Bu', 'Bv', 'Bw']
         self.ang_vel = ['Bp', 'Bq', 'Br']
 
@@ -583,7 +615,7 @@ class DatasetList3D(torch.utils.data.Dataset):
 
         self.y_labels = [
             f'{prefix}du', f'{prefix}dv', f'{prefix}dw',
-            f'{prefix}dp', f'{prefix}dq' f'{prefix}dr'
+            f'{prefix}dp', f'{prefix}dq', f'{prefix}dr'
         ]
         self.u_labels = ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']
 
