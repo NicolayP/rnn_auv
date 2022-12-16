@@ -60,9 +60,8 @@ def clean_bag(dataDir, outDir, n=500, freq=0.1):
         bagDir = join(dataDir, name)
         corrupt = join(dataDir, "corrupted", f)
         if exists(bagFile):
-            traj = traj_from_bag(bagFile, renameLabelsS, renameLabelsA, freq)
             try:
-                
+                traj = traj_from_bag(bagFile, renameLabelsS, renameLabelsA, freq)
                 if (n is not None) and n < len(traj):
                     traj = traj[:n]
                 columns = traj.columns
