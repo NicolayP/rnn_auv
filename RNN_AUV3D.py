@@ -21,6 +21,8 @@ import matplotlib.pyplot as plt
 
 import time
 
+import argparse
+
 
 class AUVRNNDeltaVProxy(torch.nn.Module):
     '''
@@ -181,9 +183,9 @@ class AUVStep(torch.nn.Module):
 
 
 class AUVTraj(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, frame="body"):
         super(AUVTraj, self).__init__()
-        self.step = AUVStep(dv_frame="body")
+        self.step = AUVStep(dv_frame=frame)
 
     def forward(self, s, A):
         '''
@@ -326,17 +328,16 @@ def integrate():
     return
 
 
-def training():
-    nb_files = 100
-    data_dir = 'csv'
+def training(data_dir, log, frame, samples, steps):
+    nb_files = samples
     dir_name = os.path.basename(data_dir)
     files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
     random.shuffle(files)
-    files = random.choice(files, k=nb_files)
+    files = random.sample(files, nb_files)
 
     # split train and val in 70-30 ration
     train_size = int(0.7*len(files))
-    
+
     train_files = files[:train_size]
     val_files = files[train_size:]
 
@@ -345,36 +346,60 @@ def training():
     print("Val size:   ", len(val_files))
 
     dfs_train = read_files(data_dir, train_files, "train")
-    dataset_train = DatasetList3D(dfs_train, steps=10)
+    dataset_train = DatasetList3D(dfs_train, steps=steps)
 
     dfs_val = read_files(data_dir, val_files, "val")
-    dataset_val = DatasetList3D(dfs_val, steps=10)
+    dataset_val = DatasetList3D(dfs_val, steps=steps)
 
-    train_params = {"batch_size": 2048, "shuffle": True, "num_workers": 8}
+    train_params = {"batch_size": 128, "shuffle": True, "num_workers": 8}
 
     ds = (
         torch.utils.data.DataLoader(dataset_train, **train_params),
         torch.utils.data.DataLoader(dataset_val, **train_params)
     )
 
-    log_path = "train_log/"
+    log_path = log
     if not os.path.exists(log_path):
         os.makedirs(log_path)
     writer = SummaryWriter(log_path)
 
-    ckpt_dir = "train_log/train_ckpt/"
+    ckpt_dir = os.path.join(log_path, "train_ckpt")
     if not os.path.exists(ckpt_dir):
         os.makedirs(ckpt_dir)
 
     device = get_device(True)
-    model = AUVTraj().to(device)
+    model = AUVTraj(frame).to(device)
     loss_fc = torch.nn.MSELoss().to(device)
     optim = torch.optim.Adam(model.parameters())
-    epochs = 1
+    epochs = 100
 
     train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir)
 
 
+def parse_arg():
+    parser = argparse.ArgumentParser(prog="RNN-AUV",
+                                     description="Trains AUV in 3D using pypose.")
+
+    parser.add_argument('-d', '--datadir', type=str, default=None,
+                        help="dir containing the csv files of the trajectories.")
+
+    parser.add_argument('-l', '--log', type=str, default="train_log",
+                        help="directory for the log. Contains tensorboard log, \
+                        hyper parameters in yaml file. And training checkpoints.")
+
+    parser.add_argument("-f", "--frame", type=str,
+                        help="The frame in which the data will be loaded default body",
+                        default="body")
+
+    parser.add_argument('-s', '--samples', type=int,
+                        help='number of files to use for the training. They are chosen \
+                        at random.', default=None)
+
+    args = parser.parse_args()
+    return args
+
+
 if __name__ == "__main__":
-    training()
+    args = parse_arg()
+    training(args.datadir, args.log, args.frame, args.samples)
     

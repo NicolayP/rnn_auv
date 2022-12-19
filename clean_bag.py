@@ -281,10 +281,12 @@ def parse_arg():
 
 def main():
     args = parse_arg()
-    if args.datadir is not None:
-        clean_bag(args.datadir, args.outdir, args.steps, args.frequency)
+    if args.datadir is None:
+        print("No datadir provided, nothing to clean")
         return
-    print("No datadir provided, nothing to clean")
+    clean_bag(args.datadir, args.outdir, args.steps, args.frequency)
+        
+
 
 if __name__ == "__main__":
     main()
