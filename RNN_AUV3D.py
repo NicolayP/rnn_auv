@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
 
-from utile import read_files, DatasetList3D, train
+from utile import read_files, DatasetList3D, train, parse_param, save_param
 
 from tqdm import tqdm
 import os
@@ -20,6 +20,7 @@ from utile import plot_traj
 import matplotlib.pyplot as plt
 
 import time
+from datetime import datetime
 
 import argparse
 
@@ -49,28 +50,38 @@ class AUVRNNDeltaV(torch.nn.Module):
             - rnn_hidden_size:
             - bias: Whether or not to apply bias to the FC units. (default False)
     '''
-    def __init__(self, bias=False, rnn_hidden_size=5, rnn_layers=1):
+    def __init__(self, params):
         super(AUVRNNDeltaV, self).__init__()
 
         self.input_size = 9 + 6 + 6 # rotation matrix + velocities + action
         self.output_size = 6
-        self.rnn_layers = rnn_layers
-        self.rnn_hidden_size = rnn_hidden_size
+        self.rnn_layers = params["rnn"]["rnn_layer"]
+        self.rnn_hidden_size = params["rnn"]["rnn_hidden_size"]
 
         self.rnn = torch.nn.RNN(
             input_size=self.input_size,
-            hidden_size=rnn_hidden_size,
-            num_layers=rnn_layers,
+            hidden_size=self.rnn_hidden_size,
+            num_layers=self.rnn_layers,
             batch_first=True,
-            bias=bias
+            bias=params["rnn"]["bias"],
+            nonlinearity=params["rnn"]["activation"]
         )
 
-        fc_layers = [
-            torch.nn.Linear(rnn_hidden_size, 32, bias=bias),
-            torch.nn.LeakyReLU(negative_slope=0.1),
-            torch.nn.Linear(32, self.output_size, bias=bias)
-        ]
+        fc_layers = []
+        topology = params["fc"]["topology"]
+        for i, s in enumerate(topology):
+            if i == 0:
+                layer = torch.nn.Linear(self.rnn_hidden_size, s, bias=params["fc"]["bias"])
+            else:
+                layer = torch.nn.Linear(topology[i-1], s, bias=params["fc"]["bias"])
+            fc_layers.append(layer)
+            fc_layers.append(torch.nn.LeakyReLU(negative_slope=0.1))
+
+        layer = torch.nn.Linear(topology[-1], 6, bias=params["fc"]["bias"])
+        fc_layers.append(layer)
+
         self.fc = torch.nn.Sequential(*fc_layers)
+        self.fc.apply(init_weights)
     
     def forward(self, x, v, a, h0=None):
         # print("\t\t", "="*5, "DELTA V", "="*5)
@@ -103,17 +114,20 @@ class AUVRNNDeltaV(torch.nn.Module):
         return torch.zeros(self.rnn_layers, k, self.rnn_hidden_size).to(device)
 
 
-class AUVStep(torch.nn.Module):
-    def __init__(self, dt=0.1, dv_frame="body"):
-        super(AUVStep, self).__init__()
-        self.dv_pred = AUVRNNDeltaV()
-        self.dt = dt
-        self.dv_frame = dv_frame
+def init_weights(m):
+    if isinstance(m, torch.nn.Linear):
+        torch.nn.init.xavier_uniform(m.weight)
+        #m.bias.data.fill_(0.01)
+    pass
 
-        if self.dv_frame == "body":
-            self.forward = self.forward_body
-        elif self.dv_frame == "world":
-            self.forward = self.forward_inertial
+
+class AUVStep(torch.nn.Module):
+    def __init__(self, params, dt=0.1):
+        super(AUVStep, self).__init__()
+        self.dv_pred = AUVRNNDeltaV(params["model"])
+        self.dt = dt
+        self.v_frame = params["dataset_params"]["v_frame"]
+        self.dv_frame = params["dataset_params"]["dv_frame"]
 
     def forward(self, x, v, a, h0=None):
         '''
@@ -137,55 +151,28 @@ class AUVStep(torch.nn.Module):
                     The next velocity. Shape [k, 6]
                 - h_next, 
         '''
-        pass                                                                
+        dv, h_next = self.dv_pred(x, v, a, h0)
 
-    def forward_body(self, x, v, a, h0=None):
-        # print("\t", "="*5, "AUV STEP", "="*5)
-        # print("\tx:      ", x.shape)
-        # print("\tv:      ", v.shape)
-        # print("\tA:      ", a.shape)
-        
-        #print("h:      ", h0.shape)
-        Bdv, h_next = self.dv_pred(x, v, a, h0)
+        t = pp.se3(v*self.dt).Exp()
+        if self.v_frame == "body":
+            x_next = x * t
+        elif self.v_frame == "world":
+            x_next = t * x
 
-        #print("\tBdv:    ", Bdv.shape)
-        #print("\th_next: ", h_next.shape)
-        # compute displacement.
-        t = v*self.dt
+        if self.v_frame == self.dv_frame:
+            v_next = v + dv
+        elif self.v_frame == "world": # assumes that dv is in body frame.
+            v_next = v + x.Adj(dv)
+        elif self.v_frame == "body": # assumes that dv is in world frame.
+            v_next = v + x.Inv().Adj(dv)
 
-        #print("\tt:      ", t.shape)
-        # Update pose using right \oplus operator as we assume
-        # the velocity to be in body frame.
-        x_next = x * pp.se3(t).Exp()
-
-        #print("\tx_next: ", x_next.shape)
-        # Update the velocity.0
-        v_next = v + Bdv
-
-        # print("\tv_next: ", v_next.shape)
-        return x_next, v_next, Bdv, h_next
-
-    def forward_inertial(self, x, v, a, h0=None):
-        Idv, h_next = self.dv_pred(x, v, a, h0)
-        # Compute the displacement.
-        t = v*self.dt
-        # Update pose using right \oplus operator as we assume the 
-        # velocity to be in body frame.
-        x_next = x * pp.se3(t).Exp()
-        # Update the velocity vector.
-        # Bring the current velocity in the lie algebra
-        I_v = x.Adj(v)
-        # Add the velocity delta (assumed in world frame)
-        I_v_next = I_v + Idv
-        # Revert the new velocity back into the body frame.
-        v_next = x.Inv().Adj(I_v_next)
-        return x_next, v_next, Idv, h_next
+        return x_next, v_next, dv, h_next                             
 
 
 class AUVTraj(torch.nn.Module):
-    def __init__(self, frame="body"):
+    def __init__(self, params):
         super(AUVTraj, self).__init__()
-        self.step = AUVStep(dv_frame=frame)
+        self.step = AUVStep(params)
 
     def forward(self, s, A):
         '''
@@ -328,15 +315,16 @@ def integrate():
     return
 
 
-def training(data_dir, log, frame, samples, steps):
-    nb_files = samples
-    dir_name = os.path.basename(data_dir)
+def training(params):
+    nb_files = params["dataset_params"]["samples"]
+    data_dir = params["dataset_params"]["dir"]
+
     files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
     random.shuffle(files)
     files = random.sample(files, nb_files)
 
     # split train and val in 70-30 ration
-    train_size = int(0.7*len(files))
+    train_size = int(params["dataset_params"]["split"]*len(files))
 
     train_files = files[:train_size]
     val_files = files[train_size:]
@@ -345,22 +333,41 @@ def training(data_dir, log, frame, samples, steps):
     print("Train size: ", len(train_files))
     print("Val size:   ", len(val_files))
 
+
     dfs_train = read_files(data_dir, train_files, "train")
-    dataset_train = DatasetList3D(dfs_train, steps=steps)
+    dataset_train = DatasetList3D(
+        dfs_train,
+        steps=params["dataset_params"]["steps"],
+        v_frame=params["dataset_params"]["v_frame"],
+        dv_frame=params["dataset_params"]["dv_frame"]
+    )
 
     dfs_val = read_files(data_dir, val_files, "val")
-    dataset_val = DatasetList3D(dfs_val, steps=steps)
+    dataset_val = DatasetList3D(
+        dfs_val,
+        steps=params["dataset_params"]["steps"],
+        v_frame=params["dataset_params"]["v_frame"],
+        dv_frame=params["dataset_params"]["dv_frame"]
+    )
 
-    train_params = {"batch_size": 128, "shuffle": True, "num_workers": 8}
+    train_params = params["data_loader_params"]
 
     ds = (
         torch.utils.data.DataLoader(dataset_train, **train_params),
         torch.utils.data.DataLoader(dataset_val, **train_params)
     )
 
-    log_path = log
+    log_path = params["log"]["path"]
+    if params["log"]["stamped"]:
+        stamp = datetime.now().strftime("%Y.%m.%d-%H:%M:%S")
+        log_path = os.path.join(log_path, stamp)
+    
     if not os.path.exists(log_path):
         os.makedirs(log_path)
+
+    # TODO: save parameter file in log_path
+    save_param(os.path.join(log_path, "parameters.yaml"), params)
+
     writer = SummaryWriter(log_path)
 
     ckpt_dir = os.path.join(log_path, "train_ckpt")
@@ -368,10 +375,10 @@ def training(data_dir, log, frame, samples, steps):
         os.makedirs(ckpt_dir)
 
     device = get_device(True)
-    model = AUVTraj(frame).to(device)
+    model = AUVTraj(params).to(device)
     loss_fc = torch.nn.MSELoss().to(device)
-    optim = torch.optim.Adam(model.parameters())
-    epochs = 100
+    optim = torch.optim.Adam(model.parameters(), lr=params["optim"]["lr"])
+    epochs = params["optim"]["epochs"]
 
     train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir)
 
@@ -395,11 +402,16 @@ def parse_arg():
                         help='number of files to use for the training. They are chosen \
                         at random.', default=None)
 
+    parser.add_argument('-p', '--parameters', type=str,
+                        help="Path to a yaml file containing the training parameters. \
+                        Will be copied in the log path", default=None)
+
     args = parser.parse_args()
     return args
 
 
 if __name__ == "__main__":
     args = parse_arg()
-    training(args.datadir, args.log, args.frame, args.samples)
+    params = parse_param(args.parameters)
+    training(params)
     

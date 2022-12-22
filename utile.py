@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 from scipy.spatial.transform import Rotation as R
+import yaml
 
 # SE2
 class ToSE2Mat(torch.nn.Module):
@@ -589,14 +590,19 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
 
 # DATASET FOR 3D DATA
 class DatasetList3D(torch.utils.data.Dataset):
-    def __init__(self, data_list, steps=1, frame="Body", rot="quat"):
+    def __init__(self, data_list, steps=1, v_frame="body", dv_frame="body", rot="quat"):
         super(DatasetList3D, self).__init__()
         self.data_list = data_list
         self.s = steps
-        if frame == "Body":
-            prefix = "B"
-        elif frame == "Inertial":
-            prefix = "I"
+        if v_frame == "body":
+            v_prefix = "B"
+        elif v_frame == "world":
+            v_prefix = "I"
+
+        if dv_frame == "body":
+            dv_prefix = "B"
+        elif dv_frame == "world":
+            dv_prefix = "I"
 
         self.pos = ['x', 'y', "z"]
         # used for our SE3 implementation.
@@ -608,14 +614,14 @@ class DatasetList3D(torch.utils.data.Dataset):
         elif rot == "quat":
             self.rot = ['qx', 'qy', 'qz', 'qw']
 
-        self.lin_vel = ['Bu', 'Bv', 'Bw']
-        self.ang_vel = ['Bp', 'Bq', 'Br']
+        self.lin_vel = [f'{v_prefix}u', f'{v_prefix}v', f'{v_prefix}w']
+        self.ang_vel = [f'{v_prefix}p', f'{v_prefix}q', f'{v_prefix}r']
 
         self.x_labels = self.pos + self.rot + self.lin_vel + self.ang_vel
 
         self.y_labels = [
-            f'{prefix}du', f'{prefix}dv', f'{prefix}dw',
-            f'{prefix}dp', f'{prefix}dq', f'{prefix}dr'
+            f'{dv_prefix}du', f'{dv_prefix}dv', f'{dv_prefix}dw',
+            f'{dv_prefix}dp', f'{dv_prefix}dq', f'{dv_prefix}dr'
         ]
         self.u_labels = ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']
 
@@ -672,3 +678,13 @@ class DatasetList3D(torch.utils.data.Dataset):
             action_seq = data[self.u_labels].to_numpy()
             action_seq_list.append(action_seq)
         return traj_list, dv_traj_list, action_seq_list
+
+
+def parse_param(file):
+    with open(file) as file:
+        conf = yaml.load(file, Loader=yaml.FullLoader)
+    return conf
+
+def save_param(path, params):
+    with open(path, "w") as stream:
+        yaml.dump(params, stream)
