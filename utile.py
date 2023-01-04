@@ -591,7 +591,7 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
 
 # DATASET FOR 3D DATA
 class DatasetList3D(torch.utils.data.Dataset):
-    def __init__(self, data_list, steps=1, v_frame="body", dv_frame="body", rot="quat", traj=False):
+    def __init__(self, data_list, steps=1, v_frame="body", dv_frame="body", rot="quat", act_normed=False, traj=False):
         super(DatasetList3D, self).__init__()
         self.data_list = data_list
         self.s = steps
@@ -624,7 +624,11 @@ class DatasetList3D(torch.utils.data.Dataset):
             f'{dv_prefix}du', f'{dv_prefix}dv', f'{dv_prefix}dw',
             f'{dv_prefix}dp', f'{dv_prefix}dq', f'{dv_prefix}dr'
         ]
-        self.u_labels = ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']
+
+        if act_normed:
+            self.u_labels = ['Ux', 'Uy', 'Uz', 'Vx', 'Vy', 'Vz']
+        else:
+            self.u_labels = ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']
 
         self.samples = [traj.shape[0] - self.s for traj in data_list]
         self.len = sum(self.samples)

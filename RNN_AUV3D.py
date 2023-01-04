@@ -34,7 +34,7 @@ class AUVRNNDeltaVProxy(torch.nn.Module):
         super(AUVRNNDeltaVProxy, self).__init__()
         self._dv = dv
         self.i = 0
-    
+
     def forward(self, x, v, a, h0=None):
         self.i += 1
         return self._dv[:, self.i-1:self.i], None
@@ -87,8 +87,11 @@ class AUVRNNDeltaV(torch.nn.Module):
             else:
                 layer = torch.nn.Linear(topology[i-1], s, bias=fc_bias)
             fc_layers.append(layer)
+
             # TODO try batch norm.
-            #fc_layers.append(torch.batch_norm())
+            if params["fc"]["batch_norm"]:
+                fc_layers.append(torch.BatchNorm1d(s))
+
             fc_layers.append(torch.nn.LeakyReLU(negative_slope=0.1))
 
         layer = torch.nn.Linear(topology[-1], 6, bias=fc_bias)
@@ -96,7 +99,7 @@ class AUVRNNDeltaV(torch.nn.Module):
 
         self.fc = torch.nn.Sequential(*fc_layers)
         #self.fc.apply(init_weights)
-    
+
     def forward(self, x, v, a, h0=None):
         # print("\t\t", "="*5, "DELTA V", "="*5)
 
@@ -347,7 +350,8 @@ def training(params):
         dfs_train,
         steps=params["dataset_params"]["steps"],
         v_frame=params["dataset_params"]["v_frame"],
-        dv_frame=params["dataset_params"]["dv_frame"]
+        dv_frame=params["dataset_params"]["dv_frame"],
+        act_normed=params["dataset_params"]["act_normed"]
     )
 
     dfs_val = read_files(data_dir, val_files, "val")
@@ -355,7 +359,8 @@ def training(params):
         dfs_val,
         steps=params["dataset_params"]["steps"],
         v_frame=params["dataset_params"]["v_frame"],
-        dv_frame=params["dataset_params"]["dv_frame"]
+        dv_frame=params["dataset_params"]["dv_frame"],
+        act_normed=params["dataset_params"]["act_normed"]
     )
 
     train_params = params["data_loader_params"]
@@ -478,10 +483,6 @@ def verify_ds():
     v_col = {"u": 0, "v": 1, "w": 2, "p": 3, "q": 4, "r": 5}
     plot_traj({"pred": error_vs[0]}, v_col, tau, True, title="Velocities")
     plt.show()
-    
-    
-
-    
 
     pass
 
