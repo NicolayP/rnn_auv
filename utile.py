@@ -493,7 +493,7 @@ def val_step(dataloader, model, loss, writer, epoch, device):
         l = loss(pred_dv, Y)
 
         if writer is not None:
-            writer.add_scalar("val-loss/", l, epoch*size+batch)
+            writer.add_scalar("val-loss/", l, epoch*size+batch*len(X))
     
     # Trajectories generation for validation
     gt_trajs, gt_trajs_dv, action_seqs = dataloader.dataset.get_trajs()
@@ -582,11 +582,11 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
         if writer is not None:
             for name, param in model.named_parameters():
                 if param.requires_grad:
-                    writer.add_histogram("train/" + name, param, epoch*size+batch)
-                for dim in range(3):
+                    writer.add_histogram("train/" + name, param, epoch*size+batch*len(X))
+                for dim in range(6):
                     loss_dim = loss(pred_dv[..., dim], Y[..., dim])
-                    writer.add_scalar("dv-split-loss/" + str(dim), loss_dim, epoch*size+batch)
-                writer.add_scalar("train-loss/", l, epoch*size+batch)
+                    writer.add_scalar("dv-split-loss/" + str(dim), loss_dim, epoch*size+batch*len(X))
+                writer.add_scalar("train-loss/", l, epoch*size+batch*len(X))
 
     return l.item(), batch*len(X)
 
