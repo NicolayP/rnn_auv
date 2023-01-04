@@ -11,10 +11,11 @@ data_loader_params:
 dataset_params:
   samples: 1000 # the number of files to use for the learning. If not set, all the files in the dir are used.
   steps: 15
-  dir: "csv"
+  dir: "data/csv/sub/"
   split: 0.7 # 70% for learning, 30% for validation.
   v_frame: "world" # The frame in which the velocity is expressed.
   dv_frame: "world" # The frame in which the velocity delta is expressed.
+  act_normed: True
 
 model:
   rnn:
@@ -26,8 +27,9 @@ model:
     topology: [32, 32]
     activation: "LeakyRelu"
     bias: True
+    batch_norm: True
 
 optim:
   type: "Adam"
   lr: 1.e-4
-  epochs: 100
+  epochs: 2

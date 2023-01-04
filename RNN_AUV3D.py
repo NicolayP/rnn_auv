@@ -90,7 +90,7 @@ class AUVRNNDeltaV(torch.nn.Module):
 
             # TODO try batch norm.
             if params["fc"]["batch_norm"]:
-                fc_layers.append(torch.BatchNorm1d(s))
+                fc_layers.append(torch.nn.BatchNorm1d(s))
 
             fc_layers.append(torch.nn.LeakyReLU(negative_slope=0.1))
 
@@ -332,6 +332,9 @@ def training(params):
 
     files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
     random.shuffle(files)
+
+    nb_files = min(len(files), nb_files)
+
     files = random.sample(files, nb_files)
 
     # split train and val in 70-30 ration

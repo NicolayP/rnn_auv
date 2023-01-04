@@ -485,6 +485,7 @@ def val_step(dataloader, model, loss, writer, epoch, device):
     torch.autograd.set_detect_anomaly(True)
     size = len(dataloader.dataset)
     t = tqdm(enumerate(dataloader), desc=f"Val: {epoch}", ncols=200, colour="red", leave=False)
+    model.eval()
     for batch, data in t:
         X, U, Y = data
         X, U, Y = X.to(device), U.to(device), Y.to(device)
