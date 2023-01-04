@@ -538,6 +538,7 @@ def val_step(dataloader, model, loss, writer, epoch, device):
         for d in range(6):
             writer.add_scalar(f"Multi-step-loss-t{t}/{name[d]}", dv_loss_split[d], epoch)
 
+
 def train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir=None, ckpt_steps=2):
     if writer is not None:
         s = torch.Tensor(np.zeros(shape=(1, 1, 13))).to(device)
@@ -590,7 +591,7 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
 
 # DATASET FOR 3D DATA
 class DatasetList3D(torch.utils.data.Dataset):
-    def __init__(self, data_list, steps=1, v_frame="body", dv_frame="body", rot="quat"):
+    def __init__(self, data_list, steps=1, v_frame="body", dv_frame="body", rot="quat", traj=False):
         super(DatasetList3D, self).__init__()
         self.data_list = data_list
         self.s = steps
@@ -628,6 +629,7 @@ class DatasetList3D(torch.utils.data.Dataset):
         self.samples = [traj.shape[0] - self.s for traj in data_list]
         self.len = sum(self.samples)
         self.bins = self.create_bins()
+        self.traj_ret = traj
 
     def __len__(self):
         return self.len
@@ -645,7 +647,12 @@ class DatasetList3D(torch.utils.data.Dataset):
 
         y = sub_frame[self.y_labels].to_numpy()
         y = y[1:1+self.s]
-        return x, u, y
+        if not self.traj_ret:
+            return x, u, y
+
+        traj = sub_frame[self.x_labels].to_numpy()
+        traj = traj[1:1+self.s]
+        return x, u, y, traj
 
     @property
     def nb_trajs(self):

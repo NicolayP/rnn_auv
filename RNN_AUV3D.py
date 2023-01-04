@@ -37,7 +37,7 @@ class AUVRNNDeltaVProxy(torch.nn.Module):
     
     def forward(self, x, v, a, h0=None):
         self.i += 1
-        return self._dv[:, self.i:self.i+1], None
+        return self._dv[:, self.i-1:self.i], None
 
 
 class AUVRNNDeltaV(torch.nn.Module):
@@ -213,16 +213,16 @@ class AUVTraj(torch.nn.Module):
         
         x = pp.SE3(p).to(p.device)
         for i in range(tau):
-            #print("="*5, "Step", "="*5)
+            # print("="*5, f"Step {i}", "="*5)
             #print("x:      ", x.shape)
             #print("v:      ", v.shape)
             #print("A:      ", A[:, i:i+1].shape)
             # i:i+1 is to keep the dimension to match other inputs
             x_next, v_next, dv, h_next = self.step(x, v, A[:, i:i+1], h)
 
-            #print("x_next: ", x.shape)
-            #print("v_next: ", v.shape)
-            #print("dv:     ", dv.shape)
+            # print("x_next: ", x.shape)
+            # print("v_next: ", v.shape)
+            # print("dv:     ", dv.shape)
             #print("h_next: ", h_next.shape)
 
             x, v, h = x_next, v_next, h_next
@@ -241,7 +241,7 @@ def get_device(gpu=False):
 
 
 def integrate():
-    tau = 300
+    tau = 500
     device = get_device(gpu=True)
     dir = 'test_data_clean/2csv/'
     files = [os.path.join(dir, f) for f in os.listdir(dir)]
@@ -271,8 +271,8 @@ def integrate():
     Idvs = torch.concat(Idvs, dim=0).to(device)
     Bdvs = torch.concat(Bdvs, dim=0).to(device)
 
-    #dv_pred = AUVRNNDeltaVProxy(Bdvs).to(device)
-    dv_pred = AUVRNNDeltaV().to(device)
+    dv_pred = AUVRNNDeltaVProxy(Bdvs).to(device)
+    #dv_pred = AUVRNNDeltaV().to(device)
 
     step = AUVStep(v_frame="body", dv_frame="body").to(device)
     step.dv_pred = dv_pred
@@ -283,9 +283,9 @@ def integrate():
     input = torch.concat([trajs[:, :1], Bvels[:, :1]], dim=-1)
 
     print("input: ", input.shape)
-    print("acts:  ", acts[:, :-1].shape)
+    print("acts:  ", acts.shape)
     pred.step.dv_pred.i = 0
-    foo, bar = pred(input, acts[:, :-1])
+    foo, bar = pred(input, acts)
 
     #exit()
 
@@ -298,7 +298,7 @@ def integrate():
 
     pred.step.dv_pred.i = 0
     s = time.time()
-    pred_trajs, pred_dvs = pred(input, acts[:, :-1])
+    pred_trajs, pred_dvs = pred(input, acts)
     e = time.time()
     print(f"Prediction time: {e-s}")
 
@@ -311,6 +311,7 @@ def integrate():
     # plotting
     pred_traj_euler = to_euler(pred_trajs[0])
     traj_euler = trajs_plot[0]
+
     s_col = {"x": 0, "y": 1, "z": 2, "roll": 3, "pitch": 4, "yaw": 5}
     plot_traj({"pred": pred_traj_euler, "gt": traj_euler}, s_col, tau, True, title="State")
     v_col = {"u": 0, "v": 1, "w": 2, "p": 3, "q": 4, "r": 5}
@@ -390,6 +391,101 @@ def training(params):
     train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir)
 
 
+def verify_ds():
+    # Create dataset of 10-15 steps with one or two trajs.
+    tau = 10
+    v_frame = "body"
+    dv_frame = "body"
+    data_dir = "test_data_clean/2csv"
+    files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
+    dfs_verif = read_files(data_dir, files, "verif")
+    verif_ds = DatasetList3D(
+        dfs_verif,
+        steps=tau,
+        v_frame=v_frame,
+        dv_frame=dv_frame,
+        traj=True
+    )
+
+
+    step = AUVStep(v_frame=v_frame, dv_frame=dv_frame)
+    pred = AUVTraj()
+    pred.step = step
+
+    loss = torch.nn.MSELoss()
+    error = torch.zeros(size=(1, tau, 13))
+    # Create a DV predictor for every entry.
+
+    print(len(verif_ds))
+    for data in verif_ds:
+        x, u, y, traj = data
+        x = torch.tensor(x)[None]
+        u = torch.tensor(u)[None]
+        y = torch.tensor(y)[None]
+        traj = torch.tensor(traj)[None]
+
+        # print("X: ", x.shape)
+        # print("U: ", u.shape)
+        # print("Y: ", y.shape)
+        # print("traj: ", traj.shape)
+
+
+        dv_pred = AUVRNNDeltaVProxy(y)
+        pred.step.dv_pred = dv_pred
+        pred.step.dv_pred.i = 0
+        # Integrate the DV predictor
+        pred_trajs, pred_dvs = pred(x, u)
+
+        #print("pred_traj", pred_trajs.shape)
+
+        error += loss(traj, pred_trajs)
+
+
+        pred_trajs, pred_dvs = pred_trajs.detach().cpu(), pred_dvs.detach().cpu()
+        traj = traj.detach().cpu()
+
+        pred_vs = pred_trajs[..., -6:]
+        pred_trajs = pred_trajs[..., :-6]
+
+        Bvels = traj[..., -6:]
+        traj = traj[..., :-6]
+        Bdvs = y
+
+        pred_traj_euler = to_euler(pred_trajs[0])
+        traj_euler = to_euler(traj[0])
+
+        # Can investigate every sup prediciton to be sure.
+        # s_col = {"x": 0, "y": 1, "z": 2, "roll": 3, "pitch": 4, "yaw": 5}
+        # plot_traj({"pred": pred_traj_euler, "gt": traj_euler}, s_col, tau, True, title="State")
+        # v_col = {"u": 0, "v": 1, "w": 2, "p": 3, "q": 4, "r": 5}
+        # plot_traj({"pred": pred_vs[0], "gt": Bvels[0]}, v_col, tau, True, title="Velocities")
+        # dv_col = {"Bdu": 0, "Bdv": 1, "Bdw": 2, "Bdp": 3, "Bdq": 4, "Bdr": 5}
+        # plot_traj({"pred": pred_dvs[0], "gt": Bdvs[0]}, dv_col, tau, True, title="Velocities Deltas")
+        # plt.show()
+
+
+    # Compare it to the Expected outcome.
+
+    #print(error/len(verif_ds))
+
+    error_vs = error[..., -6:]
+    error_trajs = error[..., :-6]
+
+    #not sure about that one
+    error_euler = to_euler(error_trajs[0])
+    s_col = {"x": 0, "y": 1, "z": 2, "roll": 3, "pitch": 4, "yaw": 5}
+    plot_traj({"pred": error_euler}, s_col, tau, True, title="State")
+    v_col = {"u": 0, "v": 1, "w": 2, "p": 3, "q": 4, "r": 5}
+    plot_traj({"pred": error_vs[0]}, v_col, tau, True, title="Velocities")
+    plt.show()
+    
+    
+
+    
+
+    pass
+
+
 def parse_arg():
     parser = argparse.ArgumentParser(prog="RNN-AUV",
                                      description="Trains AUV in 3D using pypose.")
@@ -417,15 +513,23 @@ def parse_arg():
                         help="Path to a yaml file containing the training parameters. \
                         Will be copied in the log path", default=None)
 
+    parser.add_argument("-v", "--verify", action=argparse.BooleanOptionalAction,
+                        help="Verify the dataset implementation. ")
+
     args = parser.parse_args()
     return args
 
 
 if __name__ == "__main__":
     args = parse_arg()
+
     if args.integrate:
         integrate()
         exit()
+
+    elif args.verify:
+        verify_ds()
+        exit()
+
     params = parse_param(args.parameters)
     training(params)
-    

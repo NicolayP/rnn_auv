@@ -8,6 +8,8 @@ from bagpy import bagreader
 import shutil
 from scipy.spatial.transform import Rotation as R
 
+from utile import parse_param
+
 import argparse
 
 renameLabelsS = {'pose.pose.position.x': "x",
@@ -31,7 +33,7 @@ renameLabelsA = {'wrench.force.x': "Fx",
                  'wrench.torque.y': "Ty",
                  'wrench.torque.z': "Tz"}
 
-def clean_bag(dataDir, outDir, n=500, freq=0.1):
+def clean_bag(dataDir, outDir, n=500, freq=0.1, norms=None):
     '''
     Main function. Cleans a set of bags contained in directory dataDir.
     The bag is cleaned, resized and resampled. If the bag is corrupted
@@ -61,7 +63,7 @@ def clean_bag(dataDir, outDir, n=500, freq=0.1):
         corrupt = join(dataDir, "corrupted", f)
         if exists(bagFile):
             try:
-                traj = traj_from_bag(bagFile, renameLabelsS, renameLabelsA, freq)
+                traj = traj_from_bag(bagFile, renameLabelsS, renameLabelsA, freq, norms)
                 if (n is not None) and n < len(traj):
                     traj = traj[:n]
                 columns = traj.columns
@@ -73,7 +75,7 @@ def clean_bag(dataDir, outDir, n=500, freq=0.1):
                 continue
         pd.DataFrame(data=traj, columns=columns).to_csv(os.path.join(outDir, name + ".csv"))
 
-def traj_from_bag(path, rds, rda, freq):
+def traj_from_bag(path, rds, rda, freq, norms):
     '''
         Extracts a path from a rosbag and returns a
         pandas dataframe resampled at frequency freq.
@@ -96,8 +98,47 @@ def traj_from_bag(path, rds, rda, freq):
     dfs = pd.read_csv(bag.message_by_topic("/rexrov2/pose_gt"))
     dfa = pd.read_csv(bag.message_by_topic("/thruster_input"))
     traj = df_traj(dfs, rds, dfa, rda, freq)
+    traj = norm_actions(traj, norms)
     traj = traj.set_index(np.arange(len(traj)))
     return traj
+
+def norm_actions(traj, norms):
+    # Linear
+    traj['Ux'] = norm_action(traj['Fx'], norms['x'])
+    traj['Uy'] = norm_action(traj['Fy'], norms['y'])
+    traj['Uz'] = norm_action(traj['Fz'], norms['z'])
+    # Angular
+    traj['Vx'] = norm_action(traj['Tx'], norms['p'])
+    traj['Vy'] = norm_action(traj['Ty'], norms['q'])
+    traj['Vz'] = norm_action(traj['Tz'], norms['r'])
+    return traj
+
+def norm_actions2(traj, norms):
+    # Linear
+    traj['Ux'] = norm_action2(traj['Fx'], norms['x'])
+    traj['Uy'] = norm_action2(traj['Fy'], norms['x'])
+    traj['Uz'] = norm_action2(traj['Fz'], norms['x'])
+    # Angular
+    traj['Vx'] = norm_action2(traj['Tx'], norms['x'])
+    traj['Vy'] = norm_action2(traj['Ty'], norms['x'])
+    traj['Vz'] = norm_action2(traj['Tz'], norms['x'])
+    return traj
+
+def norm_action(act, norm):
+    # norm[0] is min
+    # norm[1] is max
+    # Norm between -1 and 1
+    return (act - norm[0]) / (norm[1] - norm[0])*2 - 1
+
+def norm_action2(act, norm):
+    # norm[0] is min in negative values
+    # norm[1] is max
+    # norm in a "relu" fashion.
+    # piecewise normalization would be similar
+    # to a relu activated output.
+    if act > 0:
+        return act/norm[1]
+    return -act/norm[0]
 
 def df_traj(dfs, rds, dfa, rda, freq):
     '''
@@ -276,6 +317,10 @@ def parse_arg():
     parser.add_argument('-s', '--steps', type=int,
                         help='number of steps to keep in the bag', default=500)
 
+    parser.add_argument('-n', '--norm', type=str,
+                        help='yaml file contianing max and min thrusts for the \
+                        vehcile', default="")
+
     args = parser.parse_args()
     return args
 
@@ -284,7 +329,8 @@ def main():
     if args.datadir is None:
         print("No datadir provided, nothing to clean")
         return
-    clean_bag(args.datadir, args.outdir, args.steps, args.frequency)
+    norm = parse_param(args.norm)
+    clean_bag(args.datadir, args.outdir, args.steps, args.frequency, norm)
         
 
 
