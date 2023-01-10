@@ -198,12 +198,12 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
     model.train()
     t = tqdm(enumerate(dataloader), desc=f"Epoch: {epoch}", ncols=200, colour="red", leave=False)
     for batch, data in t:
-        X, U, Y = data
-        X, U, Y = X.to(device), U.to(device), Y.to(device)
+        X, U, dv, traj = data
+        X, U, dv, traj = X.to(device), U.to(device), dv.to(device), traj.to(device)
 
-        pred, pred_dv = model(X, U)
+        pred, pred_v, pred_dv = model(X, U)
         optim.zero_grad()
-        l = loss(pred_dv, Y)
+        l = loss(traj, pred)
         l.backward()
         optim.step()
 
@@ -218,112 +218,12 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
 
     return l.item(), batch*len(X)
 
-# DATASET FOR 3D DATA
-class DatasetList3D(torch.utils.data.Dataset):
-    def __init__(self, data_list, steps=1, v_frame="body", dv_frame="body", rot="quat", act_normed=False, traj=False):
-        super(DatasetList3D, self).__init__()
-        self.data_list = data_list
-        self.s = steps
-        if v_frame == "body":
-            v_prefix = "B"
-        elif v_frame == "world":
-            v_prefix = "I"
-
-        if dv_frame == "body":
-            dv_prefix = "B"
-        elif dv_frame == "world":
-            dv_prefix = "I"
-
-        self.pos = ['x', 'y', "z"]
-        # used for our SE3 implementation.
-        if rot == "rot":
-            self.rot = ['r00', 'r01', 'r02',
-                        'r10', 'r11', 'r12',
-                        'r20', 'r21', 'r22']
-        # Used in pypose implementation.
-        elif rot == "quat":
-            self.rot = ['qx', 'qy', 'qz', 'qw']
-
-        self.lin_vel = [f'{v_prefix}u', f'{v_prefix}v', f'{v_prefix}w']
-        self.ang_vel = [f'{v_prefix}p', f'{v_prefix}q', f'{v_prefix}r']
-
-        self.x_labels = self.pos + self.rot + self.lin_vel + self.ang_vel
-
-        self.y_labels = [
-            f'{dv_prefix}du', f'{dv_prefix}dv', f'{dv_prefix}dw',
-            f'{dv_prefix}dp', f'{dv_prefix}dq', f'{dv_prefix}dr'
-        ]
-
-        if act_normed:
-            self.u_labels = ['Ux', 'Uy', 'Uz', 'Vx', 'Vy', 'Vz']
-        else:
-            self.u_labels = ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']
-
-        self.samples = [traj.shape[0] - self.s for traj in data_list]
-        self.len = sum(self.samples)
-        self.bins = self.create_bins()
-        self.traj_ret = traj
-
-    def __len__(self):
-        return self.len
-
-    def __getitem__(self, idx):
-        i = (np.digitize([idx], self.bins)-1)[0]
-        traj = self.data_list[i]
-        j = idx - self.bins[i]
-        sub_frame = traj.iloc[j:j+self.s+1]
-        x = sub_frame[self.x_labels].to_numpy()
-        x = x[:1]
-
-        u = sub_frame[self.u_labels].to_numpy()
-        u = u[:self.s]
-
-        y = sub_frame[self.y_labels].to_numpy()
-        y = y[1:1+self.s]
-        if not self.traj_ret:
-            return x, u, y
-
-        traj = sub_frame[self.x_labels].to_numpy()
-        traj = traj[1:1+self.s]
-        return x, u, y, traj
-
-    @property
-    def nb_trajs(self):
-        return len(self.data_list)
-    
-    def get_traj(self, idx):
-        if idx >= self.nb_trajs:
-            raise IndexError
-        return self.data_list[idx][self.x_labels].to_numpy()
-    
-    def create_bins(self):
-        bins = [0]
-        cummul = 0
-        for s in self.samples:
-            cummul += s
-            bins.append(cummul)
-        return bins
-
-    def get_trajs(self):
-        traj_list = []
-        dv_traj_list = []
-        action_seq_list = []
-        for data in self.data_list:
-            traj = data[self.x_labels].to_numpy()
-            traj_list.append(traj)
-
-            dv_traj = data[self.y_labels].to_numpy()
-            dv_traj_list.append(dv_traj)
-
-            action_seq = data[self.u_labels].to_numpy()
-            action_seq_list.append(action_seq)
-        return traj_list, dv_traj_list, action_seq_list
-
 
 def parse_param(file):
     with open(file) as file:
         conf = yaml.load(file, Loader=yaml.FullLoader)
     return conf
+
 
 def save_param(path, params):
     with open(path, "w") as stream:

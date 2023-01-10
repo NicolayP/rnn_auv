@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
 
-from utile import read_files, DatasetList3D, train, parse_param, save_param, to_euler
+from utile import read_files, train, parse_param, save_param, to_euler
+from nn_utile import DatasetList3D, AUVRNNDeltaVProxy, AUVRNNDeltaV, AUVStep, AUVTraj, TrajLoss
 
 from tqdm import tqdm
 import os
@@ -24,216 +25,6 @@ from datetime import datetime
 
 import argparse
 
-
-class AUVRNNDeltaVProxy(torch.nn.Module):
-    '''
-        Proxy for the RNN part of the network. Used to ensure that
-        the integration using PyPose is correct.
-    '''
-    def __init__(self, dv):
-        super(AUVRNNDeltaVProxy, self).__init__()
-        self._dv = dv
-        self.i = 0
-
-    def forward(self, x, v, a, h0=None):
-        self.i += 1
-        return self._dv[:, self.i-1:self.i], None
-
-
-class AUVRNNDeltaV(torch.nn.Module):
-    '''
-        RNN predictor for $\delta v$.
-
-        parameters:
-        -----------
-            - rnn_layer:
-            - rnn_hidden_size:
-            - bias: Whether or not to apply bias to the FC units. (default False)
-    '''
-    def __init__(self, params=None):
-        super(AUVRNNDeltaV, self).__init__()
-
-        self.input_size = 9 + 6 + 6 # rotation matrix + velocities + action. I.E 21
-        self.output_size = 6
-
-        self.rnn_layers = 5
-        self.rnn_hidden_size = 1
-        rnn_bias = False
-        nonlinearity = "tanh"
-        topology = [32, 32]
-        fc_bias = False
-
-        if params is not None:
-            self.rnn_layers = params["rnn"]["rnn_layer"]
-            self.rnn_hidden_size = params["rnn"]["rnn_hidden_size"]
-            rnn_bias = params["rnn"]["bias"]
-            nonlinearity = params["rnn"]["activation"]
-            topology = params["fc"]["topology"]
-            fc_bias = params["fc"]["bias"]
-
-        self.rnn = torch.nn.RNN(
-            input_size=self.input_size,
-            hidden_size=self.rnn_hidden_size,
-            num_layers=self.rnn_layers,
-            batch_first=True,
-            bias=rnn_bias,
-            nonlinearity=nonlinearity
-        )
-
-        fc_layers = []
-        for i, s in enumerate(topology):
-            if i == 0:
-                layer = torch.nn.Linear(self.rnn_hidden_size, s, bias=fc_bias)
-            else:
-                layer = torch.nn.Linear(topology[i-1], s, bias=fc_bias)
-            fc_layers.append(layer)
-
-            # TODO try batch norm.
-            if params["fc"]["batch_norm"]:
-                fc_layers.append(torch.nn.BatchNorm1d(s))
-
-            fc_layers.append(torch.nn.LeakyReLU(negative_slope=0.1))
-
-        layer = torch.nn.Linear(topology[-1], 6, bias=fc_bias)
-        fc_layers.append(layer)
-
-        self.fc = torch.nn.Sequential(*fc_layers)
-        #self.fc.apply(init_weights)
-
-    def forward(self, x, v, a, h0=None):
-        # print("\t\t", "="*5, "DELTA V", "="*5)
-
-        k = x.shape[0]
-        r = x.rotation().matrix().flatten(start_dim=-2)
-        input_seq = torch.concat([r, v, a], dim=-1)
-
-        if h0 is None:
-            h0 = self.init_hidden(k, x.device)
-
-        out, hN = self.rnn(input_seq, h0)
-        dv = self.fc(out[:, 0])
-        return dv[:, None], hN
-
-    def init_hidden(self, k, device):
-        return torch.zeros(self.rnn_layers, k, self.rnn_hidden_size).to(device)
-
-
-def init_weights(m):
-    if isinstance(m, torch.nn.Linear):
-        torch.nn.init.xavier_uniform(m.weight)
-        #m.bias.data.fill_(0.01)
-    pass
-
-
-class AUVStep(torch.nn.Module):
-    def __init__(self, params=None, dt=0.1, v_frame=None, dv_frame=None):
-        super(AUVStep, self).__init__()
-        if params is not None:
-            self.dv_pred = AUVRNNDeltaV(params["model"])
-            self.v_frame = params["dataset_params"]["v_frame"]
-            self.dv_frame = params["dataset_params"]["dv_frame"]
-        else:
-            self.dv_pred = AUVRNNDeltaV()
-            self.v_frame = v_frame
-            self.dv_frame = dv_frame
-        self.dt = dt
-
-    def forward(self, x, v, a, h0=None):
-        '''
-            Predicts next state (x_next, v_next) from (x, v, a, h0)
-
-            inputs:
-            -------
-                - x, pypose.SE3. The current pose on the SE3 manifold.
-                    shape [k, 7] (pypose uses quaternion representation)
-                - v, torch.Tensor \in \mathbb{R}^{6} \simeq pypose.se3.
-                    The current velocity. shape [k, 6]
-                - a, torch.Tensor the current applied forces.
-                    shape [k, 6]
-                - h0, the hidden state of the RNN network.
-            
-            outputs:
-            --------
-                - x_next, pypose.SE3. The next pose on the SE3 manifold.
-                    shape [k, 7]
-                - v_next, torch.Tensor \in \mathbb{R}^{6} \simeq pypose.se3.
-                    The next velocity. Shape [k, 6]
-                - h_next, 
-        '''
-        dv, h_next = self.dv_pred(x, v, a, h0)
-
-        t = pp.se3(v*self.dt).Exp()
-        if self.v_frame == "body":
-            x_next = x * t
-        elif self.v_frame == "world":
-            x_next = t * x
-
-        if self.v_frame == self.dv_frame:
-            v_next = v + dv
-        elif self.v_frame == "world": # assumes that dv is in body frame.
-            v_next = v + x.Adj(dv)
-        elif self.v_frame == "body": # assumes that dv is in world frame.
-            v_next = v + x.Inv().Adj(dv)
-
-        return x_next, v_next, dv, h_next                             
-
-
-class AUVTraj(torch.nn.Module):
-    def __init__(self, params=None):
-        super(AUVTraj, self).__init__()
-        self.step = AUVStep(params)
-
-    def forward(self, s, A):
-        '''
-            Generates a trajectory using a Inital State (pose + velocity) combined
-            with an action sequence.
-
-            inputs:
-            -------
-                - p, torch.Tensor. The pose of the system with quaternion representation.
-                    shape [k, 7]
-                - v, torch.Tensor. The velocity (in body frame) of the system.
-                    shape [k, 6]
-                - A, torch.Tensor. The action sequence appliedto the system.
-                    shape [k, Tau, 6]
-
-            outputs:
-            --------
-                - traj, torch.Tensor. The generated trajectory.
-                    shape [k, tau, 7]
-                - traj_v, torch.Tensor. The generated velocity profiles.
-                    shape [k, tau, 6]
-                - traj_dv, torch.Tensor. The predicted velocity delta. Used for
-                    training. shape [k, tau, 6]
-        '''
-        k = A.shape[0]
-        tau = A.shape[1]
-        h = None
-        p = s[..., :7]
-        v = s[..., 7:]
-        traj = torch.zeros(size=(k, tau, 7+6)).to(p.device)
-        traj_dv = torch.zeros(size=(k, tau, 6)).to(p.device)
-        
-        x = pp.SE3(p).to(p.device)
-        for i in range(tau):
-            # print("="*5, f"Step {i}", "="*5)
-            #print("x:      ", x.shape)
-            #print("v:      ", v.shape)
-            #print("A:      ", A[:, i:i+1].shape)
-            # i:i+1 is to keep the dimension to match other inputs
-            x_next, v_next, dv, h_next = self.step(x, v, A[:, i:i+1], h)
-
-            # print("x_next: ", x.shape)
-            # print("v_next: ", v.shape)
-            # print("dv:     ", dv.shape)
-            #print("h_next: ", h_next.shape)
-
-            x, v, h = x_next, v_next, h_next
-            traj[:, i:i+1] = torch.concat([x.data, v], axis=-1)
-            traj_dv[:, i:i+1] = dv
-        return traj, traj_dv
-
-
 def get_device(gpu=False):
     use_cuda = False
     if gpu:
@@ -245,16 +36,11 @@ def get_device(gpu=False):
 
 def integrate():
     tau = 500
+    se3 = True
     device = get_device(gpu=True)
-    dir = 'test_data_clean/2csv/'
+    dir = 'data/csv/sub/'
     files = [os.path.join(dir, f) for f in os.listdir(dir)]
-    trajs = []
-    trajs_plot = []
-    Ivels = []
-    Bvels = []
-    acts = []
-    Idvs = []
-    Bdvs = []
+    trajs, trajs_plot, Ivels, Bvels, acts, Idvs, Bdvs = [], [], [], [], [], [], []
 
     for f in files:
         df = pd.read_csv(f)
@@ -280,7 +66,7 @@ def integrate():
     step = AUVStep(v_frame="body", dv_frame="body").to(device)
     step.dv_pred = dv_pred
 
-    pred = AUVTraj().to(device)
+    pred = AUVTraj(se3=True).to(device)
     pred.step = step
 
     input = torch.concat([trajs[:, :1], Bvels[:, :1]], dim=-1)
@@ -288,31 +74,33 @@ def integrate():
     print("input: ", input.shape)
     print("acts:  ", acts.shape)
     pred.step.dv_pred.i = 0
-    foo, bar = pred(input, acts)
-
-    #exit()
-
-    #log_path = "integrate_log/"
-    #if not os.path.exists(log_path):
-    #    os.makedirs(log_path)
-    #writer = SummaryWriter(log_path)
-
-    #writer.add_graph(pred, (input, acts[:, :2]))
+    foo_t, foo_v, foo_dv = pred(input, acts)
 
     pred.step.dv_pred.i = 0
     s = time.time()
-    pred_trajs, pred_dvs = pred(input, acts)
+    pred_trajs, pred_vs, pred_dvs = pred(input, acts)
     e = time.time()
     print(f"Prediction time: {e-s}")
 
-    pred_trajs, pred_dvs = pred_trajs.detach().cpu(), pred_dvs.detach().cpu()
+    pred_trajs, pred_vs, pred_dvs = pred_trajs.detach().cpu(), pred_vs.detach().cpu(), pred_dvs.detach().cpu()
     trajs, Ivels, Bvels, Idvs, Bdvs = trajs.cpu(), Ivels.cpu(), Bvels.cpu(), Idvs.cpu(), Bdvs.cpu()
 
-    pred_vs = pred_trajs[..., -6:]
-    pred_trajs = pred_trajs[..., :-6]
+    loss_fc = TrajLoss().to(device)
+
+    if not se3:
+        pred_trajs_pp = pp.SE3(pred_trajs)
+    else:
+        pred_trajs_pp = pred_trajs
+    trajs_pp = pp.SE3(trajs)
+    l = loss_fc(trajs_pp, pred_trajs_pp, Bvels, pred_vs, Bdvs, pred_dvs)
+
+    print(f"Loss: {l} {l.shape}")
 
     # plotting
-    pred_traj_euler = to_euler(pred_trajs[0])
+    if se3:
+        pred_traj_euler = to_euler(pred_trajs[0].data)
+    else:
+        pred_traj_euler = to_euler(pred_trajs[0])
     traj_euler = trajs_plot[0]
 
     s_col = {"x": 0, "y": 1, "z": 2, "roll": 3, "pitch": 4, "yaw": 5}
@@ -392,7 +180,8 @@ def training(params):
 
     device = get_device(True)
     model = AUVTraj(params).to(device)
-    loss_fc = torch.nn.MSELoss().to(device)
+    # loss_fc = torch.nn.MSELoss().to(device)
+    loss_fc = TrajLoss().to(device)
     optim = torch.optim.Adam(model.parameters(), lr=params["optim"]["lr"])
     epochs = params["optim"]["epochs"]
 
