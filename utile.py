@@ -115,31 +115,40 @@ def val_step(dataloader, model, loss, writer, epoch, device):
     t = tqdm(enumerate(dataloader), desc=f"Val: {epoch}", ncols=200, colour="red", leave=False)
     model.eval()
     for batch, data in t:
-        X, U, Y = data
-        X, U, Y = X.to(device), U.to(device), Y.to(device)
-        pred, pred_dv = model(X, U)
-        l = loss(pred_dv, Y)
+        X, U, traj, vel, dv = data
+        X, U = X.to(device), U.to(device)
+        traj, vel, dv = traj.to(device), vel.to(device), dv.to(device)
+
+        pred, pred_vel, pred_dv = model(X, U)
+        l = loss(traj, pred)
 
         if writer is not None:
             writer.add_scalar("val-loss/", l, epoch*size+batch*len(X))
     
     # Trajectories generation for validation
-    gt_trajs, gt_trajs_dv, action_seqs = dataloader.dataset.get_trajs()
+    gt_trajs, gt_vels, gt_trajs_dv, action_seqs = dataloader.dataset.get_trajs()
     
-    x_init = torch.Tensor(gt_trajs[0][None, 0:1, ...]).to(device)
-    A = torch.Tensor(action_seqs[0][None, ...]).to(device)
+    # get the first element of th
+    x_init = gt_trajs[0:1, 0:1, ...].to(device)
+    v_init = gt_vels[0:1, 0:1, ...].to(device)
+    A = action_seqs[0:1, ...].to(device)
 
-    pred_trajs, pred_trajs_dv = model(x_init, A)
+    init = torch.concat([x_init.data, v_init], dim=-1)
+
+    pred_trajs, pred_vels, pred_trajs_dv = model(init, A)
 
     tau = [10, 20, 30, 40, 50]
+
     t_dict = {
-        "model": to_euler(pred_trajs[0, :, :7].detach().cpu()),
-        "gt": to_euler(gt_trajs[0][:, :7])
+        "model": to_euler(pred_trajs[0].detach().cpu()),
+        "gt": to_euler(gt_trajs[0])
     }
+
     v_dict = {
-        "model": pred_trajs[0, :, -6:].detach().cpu(),
-        "gt": gt_trajs[0][:, -6:]
+        "model": pred_vels[0].detach().cpu(),
+        "gt": gt_vels[0]
     }
+
     dv_dict = {
         "model": pred_trajs_dv[0].detach().cpu(),
         "gt": gt_trajs_dv[0]
@@ -147,9 +156,6 @@ def val_step(dataloader, model, loss, writer, epoch, device):
 
     t_imgs, v_imgs, dv_imgs = gen_imgs_3D(t_dict, v_dict, dv_dict, tau=tau)
 
-    dv_losses = [loss(pred_trajs_dv[0, :h], torch.Tensor(gt_trajs_dv[0][:h]).to(device)) for h in tau]
-    dv_losses_split = [[loss(pred_trajs_dv[0, :h, dim], torch.Tensor(gt_trajs_dv[0][:h, dim]).to(device)) for dim in range(6)] for h in tau]
-    
     # Log Trajs
     for t_img, t in zip(t_imgs, tau):
         writer.add_image(f"traj-{t}", t_img, epoch, dataformats="HWC")
@@ -161,8 +167,11 @@ def val_step(dataloader, model, loss, writer, epoch, device):
         writer.add_image(f"dv-{t}", dv_img, epoch, dataformats="HWC")
 
 
+    losses = [loss(pred_trajs[0, :h], gt_trajs[0, :h].to(device)) for h in tau]
+    losses_split = [[loss(pred_trajs[0, :h], gt_trajs[0, :h].to(device), dim=dim) for dim in range(6)] for h in tau]
+
     name = ["u", "v", "w", "p", "q", "r"]
-    for dv_loss, dv_loss_split, t in zip(dv_losses, dv_losses_split, tau):
+    for dv_loss, dv_loss_split, t in zip(losses, losses_split, tau):
         writer.add_scalar(f"Multi-step-loss-t{t}/all", dv_loss, epoch)
         for d in range(6):
             writer.add_scalar(f"Multi-step-loss-t{t}/{name[d]}", dv_loss_split[d], epoch)
@@ -198,10 +207,11 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
     model.train()
     t = tqdm(enumerate(dataloader), desc=f"Epoch: {epoch}", ncols=200, colour="red", leave=False)
     for batch, data in t:
-        X, U, dv, traj = data
-        X, U, dv, traj = X.to(device), U.to(device), dv.to(device), traj.to(device)
+        X, U, traj, vel, dv = data
+        X, U, traj, vel, dv = X.to(device), U.to(device), traj.to(device), vel.to(device), dv.to(device)
 
         pred, pred_v, pred_dv = model(X, U)
+
         optim.zero_grad()
         l = loss(traj, pred)
         l.backward()
@@ -212,7 +222,7 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
                 if param.requires_grad:
                     writer.add_histogram("train/" + name, param, epoch*size+batch*len(X))
                 for dim in range(6):
-                    loss_dim = loss(pred_dv[..., dim], Y[..., dim])
+                    loss_dim = loss(traj, pred, dim=dim)
                     writer.add_scalar("dv-split-loss/" + str(dim), loss_dim, epoch*size+batch*len(X))
                 writer.add_scalar("train-loss/", l, epoch*size+batch*len(X))
 

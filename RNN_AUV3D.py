@@ -142,7 +142,8 @@ def training(params):
         steps=params["dataset_params"]["steps"],
         v_frame=params["dataset_params"]["v_frame"],
         dv_frame=params["dataset_params"]["dv_frame"],
-        act_normed=params["dataset_params"]["act_normed"]
+        act_normed=params["dataset_params"]["act_normed"],
+        se3=params["model"]["se3"]
     )
 
     dfs_val = read_files(data_dir, val_files, "val")
@@ -151,7 +152,8 @@ def training(params):
         steps=params["dataset_params"]["steps"],
         v_frame=params["dataset_params"]["v_frame"],
         dv_frame=params["dataset_params"]["dv_frame"],
-        act_normed=params["dataset_params"]["act_normed"]
+        act_normed=params["dataset_params"]["act_normed"],
+        se3=params["model"]["se3"]
     )
 
     train_params = params["data_loader_params"]
@@ -193,90 +195,76 @@ def verify_ds():
     tau = 10
     v_frame = "body"
     dv_frame = "body"
-    data_dir = "test_data_clean/2csv"
+    data_dir = "data/csv/sub"
     files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
     dfs_verif = read_files(data_dir, files, "verif")
     verif_ds = DatasetList3D(
         dfs_verif,
         steps=tau,
         v_frame=v_frame,
-        dv_frame=dv_frame,
-        traj=True
+        dv_frame=dv_frame
     )
-
 
     step = AUVStep(v_frame=v_frame, dv_frame=dv_frame)
     pred = AUVTraj()
     pred.step = step
 
     loss = torch.nn.MSELoss()
-    error = torch.zeros(size=(1, tau, 13))
+    error_traj = torch.zeros(size=(1, tau, 7))
+    error_vel = torch.zeros(size=(1, tau, 6))
+    error_dv = torch.zeros(size=(1, tau, 6))
     # Create a DV predictor for every entry.
 
-    print(len(verif_ds))
-    for data in verif_ds:
-        x, u, y, traj = data
+    for data in tqdm(verif_ds):
+        x, u, traj, vel, dv = data
         x = torch.tensor(x)[None]
         u = torch.tensor(u)[None]
-        y = torch.tensor(y)[None]
         traj = torch.tensor(traj)[None]
+        vel = torch.tensor(vel)[None]
+        dv = torch.tensor(dv)[None]
 
-        # print("X: ", x.shape)
-        # print("U: ", u.shape)
-        # print("Y: ", y.shape)
-        # print("traj: ", traj.shape)
-
-
-        dv_pred = AUVRNNDeltaVProxy(y)
+        dv_pred = AUVRNNDeltaVProxy(dv)
         pred.step.dv_pred = dv_pred
         pred.step.dv_pred.i = 0
         # Integrate the DV predictor
-        pred_trajs, pred_dvs = pred(x, u)
+        pred_trajs, pred_vels, pred_dvs = pred(x, u)
 
         #print("pred_traj", pred_trajs.shape)
 
-        error += loss(traj, pred_trajs)
+        error_traj += loss(pred_trajs, traj)
+        error_vel += loss(pred_vels, vel)
+        error_dv += loss(pred_dvs, dv)
 
+        pred_trajs = pred_trajs.detach().cpu()
+        pred_vels = pred_vels.detach().cpu()
+        pred_dvs = pred_dvs.detach().cpu()
 
-        pred_trajs, pred_dvs = pred_trajs.detach().cpu(), pred_dvs.detach().cpu()
         traj = traj.detach().cpu()
-
-        pred_vs = pred_trajs[..., -6:]
-        pred_trajs = pred_trajs[..., :-6]
-
-        Bvels = traj[..., -6:]
-        traj = traj[..., :-6]
-        Bdvs = y
+        Bvel = vel.detach().cpu()
+        Bdvs = dv.detach().cpu()
 
         pred_traj_euler = to_euler(pred_trajs[0])
         traj_euler = to_euler(traj[0])
 
         # Can investigate every sup prediciton to be sure.
-        # s_col = {"x": 0, "y": 1, "z": 2, "roll": 3, "pitch": 4, "yaw": 5}
-        # plot_traj({"pred": pred_traj_euler, "gt": traj_euler}, s_col, tau, True, title="State")
-        # v_col = {"u": 0, "v": 1, "w": 2, "p": 3, "q": 4, "r": 5}
-        # plot_traj({"pred": pred_vs[0], "gt": Bvels[0]}, v_col, tau, True, title="Velocities")
-        # dv_col = {"Bdu": 0, "Bdv": 1, "Bdw": 2, "Bdp": 3, "Bdq": 4, "Bdr": 5}
-        # plot_traj({"pred": pred_dvs[0], "gt": Bdvs[0]}, dv_col, tau, True, title="Velocities Deltas")
-        # plt.show()
+        s_col = {"x": 0, "y": 1, "z": 2, "roll": 3, "pitch": 4, "yaw": 5}
+        plot_traj({"pred": pred_traj_euler, "gt": traj_euler}, s_col, tau, True, title="State")
+        v_col = {"u": 0, "v": 1, "w": 2, "p": 3, "q": 4, "r": 5}
+        plot_traj({"pred": pred_vels[0], "gt": Bvel[0]}, v_col, tau, True, title="Velocities")
+        dv_col = {"Bdu": 0, "Bdv": 1, "Bdw": 2, "Bdp": 3, "Bdq": 4, "Bdr": 5}
+        plot_traj({"pred": pred_dvs[0], "gt": Bdvs[0]}, dv_col, tau, True, title="Velocities Deltas")
+        plt.show()
 
 
     # Compare it to the Expected outcome.
 
-    #print(error/len(verif_ds))
-
-    error_vs = error[..., -6:]
-    error_trajs = error[..., :-6]
-
     #not sure about that one
-    error_euler = to_euler(error_trajs[0])
+    error_euler = to_euler(error_traj[0])
     s_col = {"x": 0, "y": 1, "z": 2, "roll": 3, "pitch": 4, "yaw": 5}
     plot_traj({"pred": error_euler}, s_col, tau, True, title="State")
     v_col = {"u": 0, "v": 1, "w": 2, "p": 3, "q": 4, "r": 5}
-    plot_traj({"pred": error_vs[0]}, v_col, tau, True, title="Velocities")
+    plot_traj({"pred": error_vel[0]}, v_col, tau, True, title="Velocities")
     plt.show()
-
-    pass
 
 
 def parse_arg():

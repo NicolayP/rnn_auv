@@ -165,7 +165,7 @@ class AUVTraj(torch.nn.Module):
     def __init__(self, params=None, se3=True):
         super(AUVTraj, self).__init__()
         self.step = AUVStep(params)
-        self.se3 = se3
+        self.se3 = params["model"]["se3"]
 
     def forward(self, s, A):
         '''
@@ -233,9 +233,8 @@ class GeodesicLoss(torch.nn.Module):
 
     def forward(self, X1, X2):
         d = (X1 * X2.Inv()).Log()
-        left = d[..., None, :]
-        right = d[..., None]
-        return torch.matmul(left, right)[..., 0, 0]
+        square = torch.pow(d, 2)
+        return square
 
 
 class TrajLoss(torch.nn.Module):
@@ -245,7 +244,7 @@ class TrajLoss(torch.nn.Module):
         self.geodesic = GeodesicLoss()
         pass
 
-    def forward(self, traj1, traj2, v1=None, v2=None, dv1=None, dv2=None):
+    def forward(self, traj1, traj2, v1=None, v2=None, dv1=None, dv2=None, dim=None):
         '''
             Computes loss on an entire trajectory. Optionally if
             dv is passed, it computes the loss on the velocity delta.
@@ -266,15 +265,21 @@ class TrajLoss(torch.nn.Module):
                     shape [k, tau, 6]
 
         '''
-        t_loss = self.geodesic(traj1, traj2).sum(-1).mean()
-
         v_loss = 0.
-        if v1 is not None and v2 is not None:
-            v_loss = self.l2(v1, v2)
-
         dv_loss = 0.
-        if dv1 is not None and dv2 is not None:
-            dv_loss = self.l2(dv1, dv2)   
+
+        if dim is not None:
+            t_loss = self.geodesic(traj1, traj2)[..., dim].mean()
+            if v1 is not None and v2 is not None:
+                v_loss = self.l2(v1[..., dim], v2[..., dim])
+            if dv1 is not None and dv2 is not None:
+                dv_loss = self.l2(dv1[..., dim], dv2[..., dim])
+        else:
+            t_loss = self.geodesic(traj1, traj2).sum(-1).mean()
+            if v1 is not None and v2 is not None:
+                v_loss = self.l2(v1, v2)
+            if dv1 is not None and dv2 is not None:
+                dv_loss = self.l2(dv1, dv2)
 
         return t_loss + v_loss + dv_loss
 
@@ -283,7 +288,7 @@ class TrajLoss(torch.nn.Module):
 class DatasetList3D(torch.utils.data.Dataset):
     def __init__(self, data_list, steps=1,
                  v_frame="body", dv_frame="body", rot="quat",
-                 act_normed=False, traj=False, se3=False):
+                 act_normed=False, se3=False):
         super(DatasetList3D, self).__init__()
         self.data_list = data_list
         self.s = steps
@@ -312,7 +317,9 @@ class DatasetList3D(torch.utils.data.Dataset):
 
         self.x_labels = self.pos + self.rot + self.lin_vel + self.ang_vel
 
-        self.y_labels = [
+        self.traj_labels = self.pos + self.rot
+        self.vel_labels = self.lin_vel + self.ang_vel
+        self.dv_labels = [
             f'{dv_prefix}du', f'{dv_prefix}dv', f'{dv_prefix}dw',
             f'{dv_prefix}dp', f'{dv_prefix}dq', f'{dv_prefix}dr'
         ]
@@ -325,7 +332,6 @@ class DatasetList3D(torch.utils.data.Dataset):
         self.samples = [traj.shape[0] - self.s for traj in data_list]
         self.len = sum(self.samples)
         self.bins = self.create_bins()
-        self.traj_ret = traj
         self.se3 = se3
 
     def __len__(self):
@@ -342,16 +348,14 @@ class DatasetList3D(torch.utils.data.Dataset):
         u = sub_frame[self.u_labels].to_numpy()
         u = u[:self.s]
 
-        y = sub_frame[self.y_labels].to_numpy()
-        y = y[1:1+self.s]
-        if not self.traj_ret:
-            return x, u, y
+        traj = sub_frame[self.traj_labels].to_numpy()[1:1+self.s]
+        vel = sub_frame[self.vel_labels].to_numpy()[1:1+self.s]
+        dv = sub_frame[self.dv_labels].to_numpy()[1:1+self.s]
 
-        traj = sub_frame[self.x_labels].to_numpy()
-        traj = traj[1:1+self.s]
         if self.se3:
             traj = pp.SE3(traj)
-        return x, u, y, traj
+
+        return x, u, traj, vel, dv
 
     @property
     def nb_trajs(self):
@@ -372,16 +376,29 @@ class DatasetList3D(torch.utils.data.Dataset):
 
     def get_trajs(self):
         traj_list = []
-        dv_traj_list = []
+        vel_list = []
+        dv_list = []
         action_seq_list = []
         for data in self.data_list:
-            traj = data[self.x_labels].to_numpy()
+            traj = data[self.traj_labels].to_numpy()[None]
             traj_list.append(traj)
 
-            dv_traj = data[self.y_labels].to_numpy()
-            dv_traj_list.append(dv_traj)
+            vel = data[self.vel_labels].to_numpy()[None]
+            vel_list.append(vel)
 
-            action_seq = data[self.u_labels].to_numpy()
+            dv = data[self.dv_labels].to_numpy()[None]
+            dv_list.append(dv)
+
+            action_seq = data[self.u_labels].to_numpy()[None]
             action_seq_list.append(action_seq)
-        return traj_list, dv_traj_list, action_seq_list
+
+        trajs = torch.Tensor(np.concatenate(traj_list, axis=0))
+        vels = torch.Tensor(np.concatenate(vel_list, axis=0))
+        dvs = torch.Tensor(np.concatenate(dv_list, axis=0))
+        actions = torch.Tensor(np.concatenate(action_seq_list, axis=0))
+
+        if self.se3:
+            trajs = pp.SE3(trajs)
+
+        return trajs, vels, dvs, actions
 
