@@ -25,13 +25,13 @@ from datetime import datetime
 
 import argparse
 
-def get_device(gpu=False):
+def get_device(gpu=False, unit=0):
     use_cuda = False
     if gpu:
         use_cuda = torch.cuda.is_available()
         if not use_cuda:
             warnings.warn("Asked for GPU but torch couldn't find a Cuda capable device")
-    return torch.device("cuda:0" if use_cuda else "cpu")
+    return torch.device(f"cuda:{unit}" if use_cuda else "cpu")
 
 
 def integrate():
@@ -114,7 +114,7 @@ def integrate():
     return
 
 
-def training(params):
+def training(params, gpu_number=0):
     nb_files = params["dataset_params"]["samples"]
     data_dir = params["dataset_params"]["dir"]
 
@@ -180,7 +180,7 @@ def training(params):
     if not os.path.exists(ckpt_dir):
         os.makedirs(ckpt_dir)
 
-    device = get_device(True)
+    device = get_device(True, gpu_number)
     model = AUVTraj(params).to(device)
     # loss_fc = torch.nn.MSELoss().to(device)
     loss_fc = TrajLoss().to(device)
@@ -296,6 +296,10 @@ def parse_arg():
     parser.add_argument("-v", "--verify", action=argparse.BooleanOptionalAction,
                         help="Verify the dataset implementation. ")
 
+    parser.add_argument("-g", "--gpu", tpye=int,
+                        help="select the gpu number, automatically uses the gpu\
+                        if available", default=0)
+
     args = parser.parse_args()
     return args
 
@@ -312,4 +316,4 @@ if __name__ == "__main__":
         exit()
 
     params = parse_param(args.parameters)
-    training(params)
+    training(params, args.gpu)
