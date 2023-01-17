@@ -401,4 +401,3 @@ class DatasetList3D(torch.utils.data.Dataset):
             trajs = pp.SE3(trajs)
 
         return trajs, vels, dvs, actions
-
