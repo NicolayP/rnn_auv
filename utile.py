@@ -132,9 +132,9 @@ def traj_loss(dataset, model, loss, tau, writer, step, device, mode="train", plo
     x_init = gt_trajs[:, 0:1].to(device)
     v_init = gt_vels[:, 0:1].to(device)
     A = aciton_seqs[:, :tau[-1]].to(device)
-    init = torch.concat([x_init, v_init], dim=-1)
+    init = torch.concat([x_init.data, v_init], dim=-1)
 
-    pred_trajs, pred_vels, pred_dvs = model(init, A)
+    pred_trajs, pred_vels, pred_dvs = model(init, aciton_seqs.to(device))
     
     losses = [loss(pred_trajs[:, :h], gt_trajs[:, :h].to(device)) for h in tau]
     losses_split = [[loss(pred_trajs[:, :h], gt_trajs[:, :h].to(device), dim=dim) for dim in range(6)] for h in tau]
@@ -142,16 +142,16 @@ def traj_loss(dataset, model, loss, tau, writer, step, device, mode="train", plo
     name = ["x", "y", "z", "vx", "vy", "vz"]
     if writer is not None:
         for l, l_split, t in zip(losses, losses_split, tau):
-        writer.add_scalar(f"{mode}-{t}/Multi-step-loss-all", l, step)
-        for d in range(6):
-            writer.add_scalar(f"{mode}-{t}/Multi-step-loss-{name[d]}", loss_dim, step)
+            writer.add_scalar(f"{mode}-{t}/Multi-step-loss-all", l, step)
+            for d in range(6):
+                writer.add_scalar(f"{mode}-{t}/Multi-step-loss-{name[d]}", l_split[d], step)
 
     if not plot:
         return
 
     t_dict = {
-        "model": to_euler(pred_trajs[0].detach().cpu()),
-        "gt": to_euler(gt_trajs[0])
+        "model": to_euler(pred_trajs[0].detach().cpu().data),
+        "gt": to_euler(gt_trajs[0].data)
     }
 
     v_dict = {
@@ -160,7 +160,7 @@ def traj_loss(dataset, model, loss, tau, writer, step, device, mode="train", plo
     }
 
     dv_dict = {
-        "model": pred_trajs_dv[0].detach().cpu(),
+        "model": pred_dvs[0].detach().cpu(),
         "gt": gt_trajs_dv[0]
     }
 
@@ -168,7 +168,7 @@ def traj_loss(dataset, model, loss, tau, writer, step, device, mode="train", plo
 
     for t_img, v_img, dv_img, t in zip(t_imgs, v_imgs, dv_imgs, tau):
         writer.add_image(f"{mode}/traj-{t}", t_img, step, dataformats="HWC")
-        writer.add_image(f"{mode}/vel-{t}", v_imh, step, dataformats="HWC")
+        writer.add_image(f"{mode}/vel-{t}", v_img, step, dataformats="HWC")
         writer.add_image(f"{mode}/dv-{t}", dv_img, step, dataformats="HWC")
 
 

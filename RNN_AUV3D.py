@@ -202,7 +202,8 @@ def verify_ds():
         dfs_verif,
         steps=tau,
         v_frame=v_frame,
-        dv_frame=dv_frame
+        dv_frame=dv_frame,
+        se3=True
     )
 
     step = AUVStep(v_frame=v_frame, dv_frame=dv_frame)
@@ -230,7 +231,6 @@ def verify_ds():
         pred_trajs, pred_vels, pred_dvs = pred(x, u)
 
         #print("pred_traj", pred_trajs.shape)
-
         error_traj += loss(pred_trajs, traj)
         error_vel += loss(pred_vels, vel)
         error_dv += loss(pred_dvs, dv)
@@ -243,9 +243,8 @@ def verify_ds():
         Bvel = vel.detach().cpu()
         Bdvs = dv.detach().cpu()
 
-        pred_traj_euler = to_euler(pred_trajs[0])
+        pred_traj_euler = to_euler(pred_trajs[0].data)
         traj_euler = to_euler(traj[0])
-
         # Can investigate every sup prediciton to be sure.
         s_col = {"x": 0, "y": 1, "z": 2, "roll": 3, "pitch": 4, "yaw": 5}
         plot_traj({"pred": pred_traj_euler, "gt": traj_euler}, s_col, tau, True, title="State")

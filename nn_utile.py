@@ -145,7 +145,7 @@ class AUVStep(torch.nn.Module):
         '''
         dv, h_next = self.dv_pred(x, v, a, h0)
 
-        t = pp.se3(v*self.dt).Exp()
+        t = pp.se3(self.dt*v).Exp()
         if self.v_frame == "body":
             x_next = x * t
         elif self.v_frame == "world":
@@ -165,7 +165,10 @@ class AUVTraj(torch.nn.Module):
     def __init__(self, params=None, se3=True):
         super(AUVTraj, self).__init__()
         self.step = AUVStep(params)
-        self.se3 = params["model"]["se3"]
+        if params is not None:
+            self.se3 = params["model"]["se3"]
+        else:
+            self.se3 = True
 
     def forward(self, s, A):
         '''
