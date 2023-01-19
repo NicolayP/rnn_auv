@@ -152,11 +152,11 @@ def traj_loss(dataset, model, loss, tau, writer, step, device, mode="train", plo
             ["u", "v", "w", "p", "q", "r"],
             ["du", "dv", "dw", "dp", "dq", "dr"]]
     if writer is not None:
-        for l, l_split, t in zip(losses, losses_split, tau):
-            writer.add_scalar(f"{mode}-{t}/Multi-step-loss-all", l, step)
+        for i, (l, l_split, t) in enumerate(zip(losses, losses_split, tau)):
+            writer.add_scalar(f"{mode}/{t}-multi-step-loss-all", l, step)
             for d in range(6):
-                for i in range(3):
-                    writer.add_scalar(f"{mode}-{t}/Multi-step-loss-{name[i][d]}", l_split[i][d], step)
+                for j in range(3):
+                    writer.add_scalar(f"{mode}/{t}-multi-step-loss-{name[j][d]}", l_split[i][j][d], step)
 
     if not plot:
         return
@@ -199,7 +199,7 @@ def val_step(dataloader, model, loss, writer, epoch, device):
         l = loss(traj, pred, vel, pred_vel, dv, pred_dv)
 
         if writer is not None:
-            writer.add_scalar("val-loss/", l, epoch*size+batch*len(X))
+            writer.add_scalar("val/loss", l, epoch*size+batch*len(X))
 
     # Trajectories generation for validation
     tau = [50]
@@ -233,8 +233,8 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
                 ["du", "dv", "dw", "dp", "dq", "dr"]]
             for d in range(6):
                 for i in range(3): 
-                    writer.add_scalar("train-split-loss/" + name[i][d], l_split[i][d], epoch*size+batch*len(X))
-            writer.add_scalar("train-loss/", l, epoch*size+batch*len(X))
+                    writer.add_scalar("train/split-loss-" + name[i][d], l_split[i][d], epoch*size+batch*len(X))
+            writer.add_scalar("train/loss", l, epoch*size+batch*len(X))
 
     return l.item(), batch*len(X)
 

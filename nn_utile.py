@@ -286,15 +286,15 @@ class TrajLoss(torch.nn.Module):
 
     def split_loss(self, t1, t2, v1, v2, dv1, dv2):
         # only used for logging and evaluating the performances.
-        t_l = self.geodesic(t1, t2)
+        t_l = self.geodesic(t1, t2).mean((0, 1))
         v_l = torch.pow(v1 - v2, 2).mean((0, 1))
         dv_l = torch.pow(dv1 - dv2, 2).mean((0, 1))
         return t_l, v_l, dv_l
 
     def loss(self, t1, t2, v1, v2, dv1, dv2):
-        t_l = self.geodesic(t1, t2)
-        v_l = self.l2(v1, v2)
-        dv_l = self.l2(dv1, dv2)
+        t_l = self.geodesic(t1, t2).mean()
+        v_l = self.l2(v1, v2).mean()
+        dv_l = self.l2(dv1, dv2).mean()
         return self.alpha*t_l + self.beta*v_l + self.gamma*dv_l
 
 
