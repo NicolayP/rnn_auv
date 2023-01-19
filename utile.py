@@ -128,23 +128,35 @@ def traj_loss(dataset, model, loss, tau, writer, step, device, mode="train", plo
             - plot: bool (default: False) if true, plots the first trajectory of the dataset as well as
                 the on predicted by the model.
     '''
-    gt_trajs, gt_vels, gt_trajs_dv, aciton_seqs = dataset.get_trajs()
+    gt_trajs, gt_vels, gt_dv, aciton_seqs = dataset.get_trajs()
     x_init = gt_trajs[:, 0:1].to(device)
     v_init = gt_vels[:, 0:1].to(device)
     A = aciton_seqs[:, :tau[-1]].to(device)
     init = torch.concat([x_init.data, v_init], dim=-1)
 
     pred_trajs, pred_vels, pred_dvs = model(init, aciton_seqs.to(device))
-    
-    losses = [loss(pred_trajs[:, :h], gt_trajs[:, :h].to(device)) for h in tau]
-    losses_split = [[loss(pred_trajs[:, :h], gt_trajs[:, :h].to(device), dim=dim) for dim in range(6)] for h in tau]
 
-    name = ["x", "y", "z", "vx", "vy", "vz"]
+
+    losses = [loss(
+            pred_trajs[:, :h], gt_trajs[:, :h].to(device),
+            pred_vels[:, :h], gt_vels[:, :h].to(device),
+            pred_dvs[:, :h], gt_dv[:, :h].to(device)
+        ) for h in tau]
+    losses_split = [[loss(
+            pred_trajs[:, :h], gt_trajs[:, :h].to(device),
+            pred_vels[:, :h], gt_vels[:, :h].to(device),
+            pred_dvs[:, :h], gt_dv[:, :h].to(device), split=True
+        )] for h in tau]
+
+    name = [["x", "y", "z", "vec_x", "vec_y", "vec_z"],
+            ["u", "v", "w", "p", "q", "r"],
+            ["du", "dv", "dw", "dp", "dq", "dr"]]
     if writer is not None:
         for l, l_split, t in zip(losses, losses_split, tau):
             writer.add_scalar(f"{mode}-{t}/Multi-step-loss-all", l, step)
             for d in range(6):
-                writer.add_scalar(f"{mode}-{t}/Multi-step-loss-{name[d]}", l_split[d], step)
+                for i in range(3):
+                    writer.add_scalar(f"{mode}-{t}/Multi-step-loss-{name[i][d]}", l_split[i][d], step)
 
     if not plot:
         return
@@ -161,7 +173,7 @@ def traj_loss(dataset, model, loss, tau, writer, step, device, mode="train", plo
 
     dv_dict = {
         "model": pred_dvs[0].detach().cpu(),
-        "gt": gt_trajs_dv[0]
+        "gt": gt_dv[0]
     }
 
     t_imgs, v_imgs, dv_imgs = gen_imgs_3D(t_dict, v_dict, dv_dict, tau=tau)
@@ -184,7 +196,7 @@ def val_step(dataloader, model, loss, writer, epoch, device):
         traj, vel, dv = traj.to(device), vel.to(device), dv.to(device)
 
         pred, pred_vel, pred_dv = model(X, U)
-        l = loss(traj, pred)
+        l = loss(traj, pred, vel, pred_vel, dv, pred_dv)
 
         if writer is not None:
             writer.add_scalar("val-loss/", l, epoch*size+batch*len(X))
@@ -192,6 +204,7 @@ def val_step(dataloader, model, loss, writer, epoch, device):
     # Trajectories generation for validation
     tau = [50]
     traj_loss(dataloader.dataset, model, loss, tau, writer, epoch, device, "val", True)
+
 
 def train_step(dataloader, model, loss, optim, writer, epoch, device):
     #print("\n", "="*5, "Training", "="*5)
@@ -206,7 +219,7 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
         pred, pred_v, pred_dv = model(X, U)
 
         optim.zero_grad()
-        l = loss(traj, pred)
+        l = loss(traj, pred, vel, pred_v, dv, pred_dv)
         l.backward()
         optim.step()
 
@@ -214,9 +227,13 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     writer.add_histogram("train/" + name, param, epoch*size+batch*len(X))
-            for dim in range(6):
-                loss_dim = loss(traj, pred, dim=dim)
-                writer.add_scalar("dv-split-loss/" + str(dim), loss_dim, epoch*size+batch*len(X))
+            l_split = loss(traj, pred, vel, pred_v, dv, pred_dv, split=True)
+            name = [["x", "y", "z", "vec_x", "vec_y", "vec_z"],
+                ["u", "v", "w", "p", "q", "r"],
+                ["du", "dv", "dw", "dp", "dq", "dr"]]
+            for d in range(6):
+                for i in range(3): 
+                    writer.add_scalar("train-split-loss/" + name[i][d], l_split[i][d], epoch*size+batch*len(X))
             writer.add_scalar("train-loss/", l, epoch*size+batch*len(X))
 
     return l.item(), batch*len(X)

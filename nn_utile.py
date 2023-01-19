@@ -241,13 +241,23 @@ class GeodesicLoss(torch.nn.Module):
 
 
 class TrajLoss(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, alpha=1., beta=0., gamma=0.):
         super(TrajLoss, self).__init__()
         self.l2 = torch.nn.MSELoss()
         self.geodesic = GeodesicLoss()
+
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
         pass
 
-    def forward(self, traj1, traj2, v1=None, v2=None, dv1=None, dv2=None, dim=None):
+    def has_v(self):
+        return self.beta > 0.
+
+    def has_dv(self):
+        return self.gamma > 0.
+
+    def forward(self, traj1, traj2, v1=None, v2=None, dv1=None, dv2=None, split=False):
         '''
             Computes loss on an entire trajectory. Optionally if
             dv is passed, it computes the loss on the velocity delta.
@@ -266,25 +276,26 @@ class TrajLoss(torch.nn.Module):
                     shape [k, tau, 6]
                 dv2: pytorch Tensor. Delta velocities profiles
                     shape [k, tau, 6]
+                split: bool (default = False), if true, returns the loss function
+                    splitted across each controlled dimension
 
         '''
-        v_loss = 0.
-        dv_loss = 0.
+        if split:
+            return self.split_loss(traj1, traj2, v1, v2, dv1, dv2)
+        return self.loss(traj1, traj2, v1, v2, dv1, dv2)
 
-        if dim is not None:
-            t_loss = self.geodesic(traj1, traj2)[..., dim].mean()
-            if v1 is not None and v2 is not None:
-                v_loss = self.l2(v1[..., dim], v2[..., dim])
-            if dv1 is not None and dv2 is not None:
-                dv_loss = self.l2(dv1[..., dim], dv2[..., dim])
-        else:
-            t_loss = self.geodesic(traj1, traj2).sum(-1).mean()
-            if v1 is not None and v2 is not None:
-                v_loss = self.l2(v1, v2)
-            if dv1 is not None and dv2 is not None:
-                dv_loss = self.l2(dv1, dv2)
+    def split_loss(self, t1, t2, v1, v2, dv1, dv2):
+        # only used for logging and evaluating the performances.
+        t_l = self.geodesic(t1, t2)
+        v_l = torch.pow(v1 - v2, 2).mean((0, 1))
+        dv_l = torch.pow(dv1 - dv2, 2).mean((0, 1))
+        return t_l, v_l, dv_l
 
-        return t_loss + v_loss + dv_loss
+    def loss(self, t1, t2, v1, v2, dv1, dv2):
+        t_l = self.geodesic(t1, t2)
+        v_l = self.l2(v1, v2)
+        dv_l = self.l2(dv1, dv2)
+        return self.alpha*t_l + self.beta*v_l + self.gamma*dv_l
 
 
 # DATASET FOR 3D DATA

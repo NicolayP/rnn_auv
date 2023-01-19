@@ -183,7 +183,7 @@ def training(params, gpu_number=0):
     device = get_device(True, gpu_number)
     model = AUVTraj(params).to(device)
     # loss_fc = torch.nn.MSELoss().to(device)
-    loss_fc = TrajLoss().to(device)
+    loss_fc = TrajLoss(params["loss"]["traj"], params["loss"]["vel"], params["loss"]["dv"]).to(device)
     optim = torch.optim.Adam(model.parameters(), lr=params["optim"]["lr"])
     epochs = params["optim"]["epochs"]
 
