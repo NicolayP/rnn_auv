@@ -296,7 +296,7 @@ def parse_arg():
     parser.add_argument("-v", "--verify", action=argparse.BooleanOptionalAction,
                         help="Verify the dataset implementation. ")
 
-    parser.add_argument("-g", "--gpu", tpye=int,
+    parser.add_argument("-g", "--gpu", type=int,
                         help="select the gpu number, automatically uses the gpu\
                         if available", default=0)
 
