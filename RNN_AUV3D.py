@@ -14,10 +14,7 @@ import random
 random.seed(0)
 import warnings
 
-npdtype = np.float32
-tdtype = torch.float32
-
-from utile import plot_traj
+from utile import plot_traj, tdtype, npdtype
 import matplotlib.pyplot as plt
 
 import time
@@ -117,6 +114,8 @@ def integrate():
 def training(params, gpu_number=0):
     nb_files = params["dataset_params"]["samples"]
     data_dir = params["dataset_params"]["dir"]
+    stats_file = os.path.join(params["dataset_params"]["dir"], "stats", "stats.yaml")
+    stats = parse_param(stats_file)
 
     files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
     random.shuffle(files)
@@ -143,7 +142,9 @@ def training(params, gpu_number=0):
         v_frame=params["dataset_params"]["v_frame"],
         dv_frame=params["dataset_params"]["dv_frame"],
         act_normed=params["dataset_params"]["act_normed"],
-        se3=params["model"]["se3"]
+        se3=params["model"]["se3"],
+        out_normed=params["dataset_params"]["out_normed"],
+        stats=stats
     )
 
     dfs_val = read_files(data_dir, val_files, "val")
@@ -153,7 +154,9 @@ def training(params, gpu_number=0):
         v_frame=params["dataset_params"]["v_frame"],
         dv_frame=params["dataset_params"]["dv_frame"],
         act_normed=params["dataset_params"]["act_normed"],
-        se3=params["model"]["se3"]
+        se3=params["model"]["se3"],
+        out_normed=params["dataset_params"]["out_normed"],
+        stats=stats
     )
 
     train_params = params["data_loader_params"]
@@ -182,6 +185,10 @@ def training(params, gpu_number=0):
 
     device = get_device(True, gpu_number)
     model = AUVTraj(params).to(device)
+    if params["dataset_params"]["out_normed"]:
+        mean, std = dataset_train.get_stats()
+        model.step.set_stats(torch.tensor(mean, dtype=tdtype).to(device),
+                            torch.tensor(std, dtype=tdtype).to(device))
     # loss_fc = torch.nn.MSELoss().to(device)
     loss_fc = TrajLoss(params["loss"]["traj"], params["loss"]["vel"], params["loss"]["dv"]).to(device)
     optim = torch.optim.Adam(model.parameters(), lr=params["optim"]["lr"])

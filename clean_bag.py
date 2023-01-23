@@ -9,6 +9,7 @@ import shutil
 from scipy.spatial.transform import Rotation as R
 
 from utile import parse_param
+import yaml
 
 import argparse
 
@@ -324,6 +325,41 @@ def parse_arg():
     args = parser.parse_args()
     return args
 
+def compute_dv_stats(data_dir):
+    files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
+    length = 0
+    cummul = np.zeros(shape=(12))
+    labels = ["Bdu", "Bdv", "Bdw", "Bdp", "Bdq", "Bdr",
+              "Idu", "Idv", "Idw", "Idp", "Idq", "Idr"]
+    for f in files:
+        df = pd.read_csv(os.path.join(data_dir, f))
+        dv = df.loc[:, labels].to_numpy()
+        cummul += dv.sum(axis=0)
+        length += len(dv)
+    mean = cummul/length
+
+    cummul = np.zeros(shape=(12))
+    for f in files:
+        df = pd.read_csv(os.path.join(data_dir, f))
+        dv = df.loc[:, labels].to_numpy()
+        cummul += np.power(dv-mean, 2).sum(axis=0)
+
+    std = np.power(cummul/length, 0.5)
+    stats = {"mean": 
+                {"B_norm": mean[:6].tolist(),
+                 "I_norm": mean[6:].tolist()},
+             "std": 
+                {"B_norm": std[:6].tolist(),
+                 "I_norm": std[6:].tolist()}
+            }
+
+    save_dir = os.path.join(data_dir, "stats")
+    if not exists(save_dir):
+        os.makedirs(save_dir)
+    
+    with open(os.path.join(save_dir, "stats.yaml"), 'w+') as stream:
+        yaml.dump(stats, stream)
+
 def main():
     args = parse_arg()
     if args.datadir is None:
@@ -331,6 +367,7 @@ def main():
         return
     norm = parse_param(args.norm)
     clean_bag(args.datadir, args.outdir, args.steps, args.frequency, norm)
+    compute_dv_stats(args.outdir)
         
 
 

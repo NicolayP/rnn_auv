@@ -3,6 +3,7 @@ torch.autograd.set_detect_anomaly(True)
 import pypose as pp
 import numpy as np
 import pandas as pd
+from utile import tdtype, npdtype
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -120,6 +121,8 @@ class AUVStep(torch.nn.Module):
             self.v_frame = v_frame
             self.dv_frame = dv_frame
         self.dt = dt
+        self.std = 1.
+        self.mean = 0.
 
     def forward(self, x, v, a, h0=None):
         '''
@@ -145,6 +148,8 @@ class AUVStep(torch.nn.Module):
         '''
         dv, h_next = self.dv_pred(x, v, a, h0)
 
+        dv_unnormed = dv*self.std + self.mean
+
         t = pp.se3(self.dt*v).Exp()
         if self.v_frame == "body":
             x_next = x * t
@@ -152,13 +157,17 @@ class AUVStep(torch.nn.Module):
             x_next = t * x
 
         if self.v_frame == self.dv_frame:
-            v_next = v + dv
+            v_next = v + dv_unnormed
         elif self.v_frame == "world": # assumes that dv is in body frame.
-            v_next = v + x.Adj(dv)
+            v_next = v + x.Adj(dv_unnormed)
         elif self.v_frame == "body": # assumes that dv is in world frame.
-            v_next = v + x.Inv().Adj(dv)
+            v_next = v + x.Inv().Adj(dv_unnormed)
 
-        return x_next, v_next, dv, h_next                             
+        return x_next, v_next, dv, h_next                     
+
+    def set_stats(self, mean, std):
+        self.mean = mean
+        self.std = std
 
 
 class AUVTraj(torch.nn.Module):
@@ -302,7 +311,7 @@ class TrajLoss(torch.nn.Module):
 class DatasetList3D(torch.utils.data.Dataset):
     def __init__(self, data_list, steps=1,
                  v_frame="body", dv_frame="body", rot="quat",
-                 act_normed=False, se3=False):
+                 act_normed=False, se3=False, out_normed=True, stats=None):
         super(DatasetList3D, self).__init__()
         self.data_list = data_list
         self.s = steps
@@ -347,6 +356,13 @@ class DatasetList3D(torch.utils.data.Dataset):
         self.len = sum(self.samples)
         self.bins = self.create_bins()
         self.se3 = se3
+        
+        if out_normed:
+            self.std = np.array(stats["std"][f'{dv_prefix}_norm'], dtype=npdtype)
+            self.mean = np.array(stats["mean"][f'{dv_prefix}_norm'], dtype=npdtype)
+        else:
+            self.std = 1.
+            self.mean = 0.
 
     def __len__(self):
         return self.len
@@ -365,6 +381,8 @@ class DatasetList3D(torch.utils.data.Dataset):
         traj = sub_frame[self.traj_labels].to_numpy()[1:1+self.s]
         vel = sub_frame[self.vel_labels].to_numpy()[1:1+self.s]
         dv = sub_frame[self.dv_labels].to_numpy()[1:1+self.s]
+
+        dv = (dv-self.mean)/self.std
 
         if self.se3:
             traj = pp.SE3(traj)
@@ -411,7 +429,12 @@ class DatasetList3D(torch.utils.data.Dataset):
         dvs = torch.Tensor(np.concatenate(dv_list, axis=0))
         actions = torch.Tensor(np.concatenate(action_seq_list, axis=0))
 
+        dvs = (dvs-self.mean)/self.std
+
         if self.se3:
             trajs = pp.SE3(trajs)
 
         return trajs, vels, dvs, actions
+
+    def get_stats(self):
+        return self.mean, self.std
