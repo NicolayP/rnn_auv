@@ -20,6 +20,21 @@ from scipy.spatial.transform import Rotation as R
 import yaml
 
 # MISC FILES
+'''
+    Reads csv files from a directory.
+    
+    input:
+    ------
+        - data_dir, string. relative or absoulte path to the directory
+        containing the csv files.
+        - files, list of string. List containing the names of all the files
+        the need to be loaded.
+        - type, string. Decorator for tqdm.
+
+    output:
+    -------
+        - dfs, list of dataframe containing the loaded csv files.
+'''
 def read_files(data_dir, files, type="train"):
     dfs = []
     for f in tqdm(files, desc=f"Dir {type}", ncols=150, colour="blue"):
@@ -29,13 +44,27 @@ def read_files(data_dir, files, type="train"):
         dfs.append(df)
     return dfs
 
-# TRAJECTORY PLOTTING
-def gen_imgs_3D(t_dict, v_dict, dv_dict=None, tau=100):
-    '''
+'''
     Plots trajectories with euler representation and velocity profiles from 
     the trajectory and velocity dictionaries respectively.
-    The trajectories are plotted with length tau
-    '''
+    The trajectories are plotted with length tau.
+
+    input:
+    ------
+        - t_dict, dictionnary. Entries are "plotting-label": trajectory. The key will be used as
+        label for the plots. The trajectory need to have the following entries [x, y, z, roll, pitch, yaw].
+        - v_dict, dictionnary. Entries are "plotting-label": velocities. The key will be used as
+        label for the plots. The veloties need to have the following entries [u, v, w, p, q, r].
+        - dv_dict, dictionnary (default, None). Entries are "plotting-label": \detla V. The key will be used as
+        label for the plots. The \delta V need to have the following entries [\delta u, \delta v, \delta w, \delta p, \delta q, \delta r].
+        - tau, int. The number of points to plot
+
+    output:
+    -------
+        - image that can be plotted or send to tensorboard. Returns tuple (trajectory_img, velocity_img).
+        if dv_dict is not None, returns (trajectory_img, velocity_img, delta_v_img)
+'''
+def gen_imgs_3D(t_dict, v_dict, dv_dict=None, tau=100):
     plotState={"x(m)":0, "y(m)": 1, "z(m)": 2, "roll(rad)": 3, "pitch(rad)":4, "yaw(rad)": 5}
     plotVels={"u(m/s)":0, "v(m/s)": 1, "w(m/s)": 2, "p(rad/s)": 3, "q(rad/s)": 4, "r(rad/s)": 5}
     plotDVels={"du(m/s)":0, "dv(m/s)": 1, "dw(m/s)": 2, "dp(rad/s)": 3, "dq(rad/s)": 4, "dr(rad/s)": 5}
@@ -44,7 +73,7 @@ def gen_imgs_3D(t_dict, v_dict, dv_dict=None, tau=100):
     if dv_dict is not None:
         dv_imgs = []
     for t in tau:
-        t_imgs.append(plot_traj(t_dict, plotState, t))
+        t_imgs.append(plot_traj(t_dict, plotState, t, title="State evolution"))
         v_imgs.append(plot_traj(v_dict, plotVels, t, title="Velcoity Profiles"))
         if dv_dict is not None:
             dv_imgs.append(plot_traj(dv_dict, plotDVels, t, title="Delta V"))
@@ -52,9 +81,27 @@ def gen_imgs_3D(t_dict, v_dict, dv_dict=None, tau=100):
     if dv_dict is not None:
         return t_imgs, v_imgs, dv_imgs
 
-    return t_imgs, v_imgs, dv_imgs
+    return t_imgs, v_imgs
 
+'''
+    Plots trajectories from a dictionnary.
 
+    input:
+    ------
+        - traj_dict, dict. Entries are "plotting-label": trajectory. The key will be used as
+        label for the plots.
+        - plot_cols, dict. Entires are "axis-name": index-in-trajectory. This matches the trajectory
+        from traj_dict.
+        - tau, int. The number of steps to plot.
+        - fig, bool (default false). If true, returns the matplotlib figure that can be shown with plt.show().
+        - title, string. The title of the graph.
+        - save, bool. (default false) If true, save the image in a dir called Img.
+
+    output:
+    -------
+        - if fig == True, returns the matplotlib figure.
+        - if fig == False, returns a np.array containing the RBG values of the image.
+'''
 def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution", save=False):
     fig_state = plt.figure(figsize=(10, 10))
     axs_states = {}
@@ -99,7 +146,18 @@ def plot_traj(traj_dict, plot_cols, tau, fig=False, title="State Evolution", sav
     plt.close('all')
     return img
 
+'''
+    Converts a trajectory using quaternion representation to euler 'xyz' angle representation.
+    
+    input:
+    ------
+        - traj, numpy array. The trajectory with quaternion representation. It assumes that the quaternion
+        is represented with entry index 3-7.
 
+    output:
+    -------
+        - traj_euler, numpy array. The same trajectory with euler representation.
+'''
 def to_euler(traj):
     # assume quaternion representation
     p = traj[..., :3]
@@ -183,96 +241,30 @@ def traj_loss(dataset, model, loss, tau, writer, step, device, mode="train", plo
         writer.add_image(f"{mode}/vel-{t}", v_img, step, dataformats="HWC")
         writer.add_image(f"{mode}/dv-{t}", dv_img, step, dataformats="HWC")
 
+'''
+    Reads a yaml file and returns the matching dictionnary.
+    
+    input:
+    ------
+        - file, string. String to the yaml file.
 
-# TRAINING AND VALIDATION
-def val_step(dataloader, model, loss, writer, epoch, device):
-    torch.autograd.set_detect_anomaly(True)
-    size = len(dataloader.dataset)
-    t = tqdm(enumerate(dataloader), desc=f"Val: {epoch}", ncols=200, colour="red", leave=False)
-    model.eval()
-    for batch, data in t:
-        X, U, traj, vel, dv = data
-        X, U = X.to(device), U.to(device)
-        traj, vel, dv = traj.to(device), vel.to(device), dv.to(device)
-
-        pred, pred_vel, pred_dv = model(X, U)
-        l = loss(traj, pred, vel, pred_vel, dv, pred_dv)
-
-        if writer is not None:
-            writer.add_scalar("val/loss", l, epoch*size+batch*len(X))
-
-    # Trajectories generation for validation
-    tau = [50]
-    traj_loss(dataloader.dataset, model, loss, tau, writer, epoch, device, "val", True)
-
-
-def train_step(dataloader, model, loss, optim, writer, epoch, device):
-    #print("\n", "="*5, "Training", "="*5)
-    torch.autograd.set_detect_anomaly(True)
-    size = len(dataloader.dataset)
-    t = tqdm(enumerate(dataloader), desc=f"Epoch: {epoch}", ncols=200, colour="red", leave=False)
-    model.train()
-    for batch, data in t:
-        X, U, traj, vel, dv = data
-        X, U, traj, vel, dv = X.to(device), U.to(device), traj.to(device), vel.to(device), dv.to(device)
-
-        pred, pred_v, pred_dv = model(X, U)
-
-        optim.zero_grad()
-        l = loss(traj, pred, vel, pred_v, dv, pred_dv)
-        l.backward()
-        optim.step()
-
-        if writer is not None:
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    writer.add_histogram("train/" + name, param, epoch*size+batch*len(X))
-            l_split = loss(traj, pred, vel, pred_v, dv, pred_dv, split=True)
-            name = [["x", "y", "z", "vec_x", "vec_y", "vec_z"],
-                ["u", "v", "w", "p", "q", "r"],
-                ["du", "dv", "dw", "dp", "dq", "dr"]]
-            for d in range(6):
-                for i in range(3): 
-                    writer.add_scalar("train/split-loss-" + name[i][d], l_split[i][d], epoch*size+batch*len(X))
-            writer.add_scalar("train/loss", l, epoch*size+batch*len(X))
-
-    return l.item(), batch*len(X)
-
-
-def train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir=None, ckpt_steps=2):
-    if writer is not None:
-        s = torch.Tensor(np.zeros(shape=(1, 1, 13))).to(device)
-        s[..., 6] = 1.
-        A = torch.Tensor(np.zeros(shape=(1, 10, 6))).to(device)
-        writer.add_graph(model, (s, A))
-    size = len(ds[0].dataset)
-    l = np.nan
-    cur = 0
-    t = tqdm(range(epochs), desc="Training", ncols=150, colour="blue",
-     postfix={"loss": f"Loss: {l:>7f} [{cur:>5d}/{size:>5d}]"})
-    for e in t:
-        if (e % ckpt_steps == 0) and ckpt_dir is not None:
-            tau=[50]
-            traj_loss(ds[0].dataset, model, loss_fc, tau, writer, e, device, "train", True)
-            val_step(ds[1], model, loss_fc, writer, e, device)
-
-            if ckpt_steps > 0:
-                tmp_path = os.path.join(ckpt_dir, f"step_{e}.pth")
-                torch.save(model.state_dict(), tmp_path)
-
-        l, cur = train_step(ds[0], model, loss_fc, optim, writer, e, device)
-        t.set_postfix({"loss": f"Loss: {l:>7f} [{cur:>5d}/{size:>5d}]"})
-
-        if writer is not None:
-            writer.flush()
-
-
+    output:
+    -------
+        - dict, the associated dictionnary.
+'''
 def parse_param(file):
     with open(file) as file:
         conf = yaml.load(file, Loader=yaml.FullLoader)
     return conf
 
+'''
+    Saves a dictionnary to a yaml file.
 
+    input:
+    ------
+        - path, string. Filename.
+        - params, dict. The dictionnary to be saved.
+'''
 def save_param(path, params):
     with open(path, "w") as stream:
         yaml.dump(params, stream)

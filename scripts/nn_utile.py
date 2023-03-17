@@ -3,10 +3,13 @@ torch.autograd.set_detect_anomaly(True)
 import pypose as pp
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from utile import tdtype, npdtype
 from torch.utils.tensorboard import SummaryWriter
 
-
+#########################################
+#     Network and proxy definitons      #
+#########################################
 class AUVRNNDeltaVProxy(torch.nn.Module):
     '''
         Proxy for the RNN part of the network. Used to ensure that
@@ -438,3 +441,86 @@ class DatasetList3D(torch.utils.data.Dataset):
 
     def get_stats(self):
         return self.mean, self.std
+    
+
+# TRAINING AND VALIDATION
+def val_step(dataloader, model, loss, writer, epoch, device):
+    torch.autograd.set_detect_anomaly(True)
+    size = len(dataloader.dataset)
+    t = tqdm(enumerate(dataloader), desc=f"Val: {epoch}", ncols=200, colour="red", leave=False)
+    model.eval()
+    for batch, data in t:
+        X, U, traj, vel, dv = data
+        X, U = X.to(device), U.to(device)
+        traj, vel, dv = traj.to(device), vel.to(device), dv.to(device)
+
+        pred, pred_vel, pred_dv = model(X, U)
+        l = loss(traj, pred, vel, pred_vel, dv, pred_dv)
+
+        if writer is not None:
+            writer.add_scalar("val/loss", l, epoch*size+batch*len(X))
+
+    # Trajectories generation for validation
+    tau = [50]
+    traj_loss(dataloader.dataset, model, loss, tau, writer, epoch, device, "val", True)
+
+
+def train_step(dataloader, model, loss, optim, writer, epoch, device):
+    #print("\n", "="*5, "Training", "="*5)
+    torch.autograd.set_detect_anomaly(True)
+    size = len(dataloader.dataset)
+    t = tqdm(enumerate(dataloader), desc=f"Epoch: {epoch}", ncols=200, colour="red", leave=False)
+    model.train()
+    for batch, data in t:
+        X, U, traj, vel, dv = data
+        X, U, traj, vel, dv = X.to(device), U.to(device), traj.to(device), vel.to(device), dv.to(device)
+
+        pred, pred_v, pred_dv = model(X, U)
+
+        optim.zero_grad()
+        l = loss(traj, pred, vel, pred_v, dv, pred_dv)
+        l.backward()
+        optim.step()
+
+        if writer is not None:
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    writer.add_histogram("train/" + name, param, epoch*size+batch*len(X))
+            l_split = loss(traj, pred, vel, pred_v, dv, pred_dv, split=True)
+            name = [["x", "y", "z", "vec_x", "vec_y", "vec_z"],
+                ["u", "v", "w", "p", "q", "r"],
+                ["du", "dv", "dw", "dp", "dq", "dr"]]
+            for d in range(6):
+                for i in range(3): 
+                    writer.add_scalar("train/split-loss-" + name[i][d], l_split[i][d], epoch*size+batch*len(X))
+            writer.add_scalar("train/loss", l, epoch*size+batch*len(X))
+
+    return l.item(), batch*len(X)
+
+
+def train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir=None, ckpt_steps=2):
+    if writer is not None:
+        s = torch.Tensor(np.zeros(shape=(1, 1, 13))).to(device)
+        s[..., 6] = 1.
+        A = torch.Tensor(np.zeros(shape=(1, 10, 6))).to(device)
+        writer.add_graph(model, (s, A))
+    size = len(ds[0].dataset)
+    l = np.nan
+    cur = 0
+    t = tqdm(range(epochs), desc="Training", ncols=150, colour="blue",
+     postfix={"loss": f"Loss: {l:>7f} [{cur:>5d}/{size:>5d}]"})
+    for e in t:
+        if (e % ckpt_steps == 0) and ckpt_dir is not None:
+            tau=[50]
+            traj_loss(ds[0].dataset, model, loss_fc, tau, writer, e, device, "train", True)
+            val_step(ds[1], model, loss_fc, writer, e, device)
+
+            if ckpt_steps > 0:
+                tmp_path = os.path.join(ckpt_dir, f"step_{e}.pth")
+                torch.save(model.state_dict(), tmp_path)
+
+        l, cur = train_step(ds[0], model, loss_fc, optim, writer, e, device)
+        t.set_postfix({"loss": f"Loss: {l:>7f} [{cur:>5d}/{size:>5d}]"})
+
+        if writer is not None:
+            writer.flush()
