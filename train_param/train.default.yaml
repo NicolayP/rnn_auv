@@ -4,32 +4,40 @@ log:
   stamped: True
 
 data_loader_params:
-  batch_size: 128
+  batch_size: 512
   shuffle: True
   num_workers: 8
 
 dataset_params:
-  samples: 1000 # the number of files to use for the learning. If not set, all the files in the dir are used.
+  samples: 10 # the number of files to use for the learning. If not set, all the files in the dir are used.
   steps: 15
-  dir: "data/csv/sub/"
+  dir: "data/csv/tests/"
   split: 0.7 # 70% for learning, 30% for validation.
   v_frame: "world" # The frame in which the velocity is expressed.
   dv_frame: "world" # The frame in which the velocity delta is expressed.
   act_normed: True
+  out_normed: False
 
 model:
+  se3: True
   rnn:
-    rnn_layer: 5
-    rnn_hidden_size : 1
+    rnn_layer: 32
+    rnn_hidden_size : 2
     bias: True
     activation: "tanh" # rnn supports 'relu' and 'tanh' (default)
   fc:
-    topology: [32, 32]
+    topology: [128, 128]
     activation: "LeakyRelu"
     bias: True
     batch_norm: True
 
+loss:
+  type: "traj"
+  traj: 1.
+  vel: 1.
+  dv: 1.
+
 optim:
   type: "Adam"
   lr: 1.e-4
-  epochs: 2
+  epochs: 4
