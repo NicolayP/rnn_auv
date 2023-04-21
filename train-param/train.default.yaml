@@ -30,6 +30,7 @@ model:
     activation: "LeakyRelu"
     bias: True
     batch_norm: True
+    relu_neg_slope: 0.1
 
 loss:
   type: "traj"

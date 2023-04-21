@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 from torch.utils.tensorboard import SummaryWriter
 
-from utile import read_files, train, parse_param, save_param, to_euler
-from nn_utile import DatasetList3D, AUVRNNDeltaVProxy, AUVRNNDeltaV, AUVStep, AUVTraj, TrajLoss
+from utile import read_files, parse_param, save_param, to_euler
+from nn_utile import DatasetList3D, AUVRNNDeltaVProxy, AUVRNNDeltaV, AUVStep, AUVTraj, TrajLoss, train
 
 from tqdm import tqdm
 import os
