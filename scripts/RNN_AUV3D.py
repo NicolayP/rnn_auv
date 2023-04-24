@@ -30,6 +30,27 @@ def get_device(gpu=False, unit=0):
             warnings.warn("Asked for GPU but torch couldn't find a Cuda capable device")
     return torch.device(f"cuda:{unit}" if use_cuda else "cpu")
 
+'''
+Runs a given RNN Model with a given input state and action sequence.
+'''
+def run(model, state, X):
+    # TODO: disable all log, just keep the trajectory.
+    traj = model(state, X)
+    return traj
+
+'''
+Load a RNN Model given a checkpoint file.
+'''
+def load_model(model, ckpt_path):
+    ckpt = torch.load(ckpt_path)
+    model.load_state_dict(ckpt)
+    return model
+
+
+def create_model(params, device):
+    model = AUVTraj(params).to(device)
+    return model
+
 
 def integrate():
     tau = 500
@@ -307,6 +328,11 @@ def parse_arg():
                         help="select the gpu number, automatically uses the gpu\
                         if available", default=0)
 
+    parser.add_argument("-r", "--run", type=str,
+                        help="when enabled, it will run the model specified in the \
+                        directory. The directory needs to contain a checkpoint file, \
+                        a run file and a parameter file.")
+
     args = parser.parse_args()
     return args
 
@@ -320,6 +346,30 @@ if __name__ == "__main__":
 
     elif args.verify:
         verify_ds()
+        exit()
+
+    elif args.run:
+        path = args.run
+        param_file = os.path.join(path, "parameters.yaml")
+        param = parse_param(param_file)
+        ckpt_path = os.path.join(path, "ckpt.pth")
+
+        device = get_device(True)
+
+        state = torch.zeros(size=(2000, 1, 13)).to(device)
+        state[..., 6] = 1.
+        seq = torch.zeros(size=(2000, 50, 6)).to(device)
+        model = create_model(param, device)
+        model = load_model(model, ckpt_path)
+
+        print("Prediction...")
+        l = 200
+        s = time.time()
+        for i in range(l):
+            traj = run(model, state, seq)
+        e = time.time()
+        print(f"Average Prediction Time: {(e-s)/l}")
+        print("Output", traj[0].shape)
         exit()
 
     params = parse_param(args.parameters)

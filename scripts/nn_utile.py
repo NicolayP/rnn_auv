@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from utile import tdtype, npdtype, to_euler, gen_imgs_3D
+import os
 from torch.utils.tensorboard import SummaryWriter
 
 #########################################
@@ -101,7 +102,7 @@ class AUVRNNDeltaV(torch.nn.Module):
                 if "rnn_hidden_size" in params["rnn"]:
                     self.rnn_hidden_size = params["rnn"]["rnn_hidden_size"]
                 if "bias" in params["rnn"]:
-                    self.rnn_layers = params["rnn"]["bias"]
+                    rnn_bias = params["rnn"]["bias"]
                 if "activation" in params["rnn"]:
                     nonlinearity = params["rnn"]["activation"]
 

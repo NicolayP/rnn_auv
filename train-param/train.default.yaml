@@ -1,6 +1,6 @@
 ---
 log:
-  path: "train_log"
+  path: "../train_log"
   stamped: True
 
 data_loader_params:
@@ -11,7 +11,7 @@ data_loader_params:
 dataset_params:
   samples: 10 # the number of files to use for the learning. If not set, all the files in the dir are used.
   steps: 15
-  dir: "data/csv/tests/"
+  dir: "../data/csv/tests/"
   split: 0.7 # 70% for learning, 30% for validation.
   v_frame: "world" # The frame in which the velocity is expressed.
   dv_frame: "world" # The frame in which the velocity delta is expressed.
@@ -21,8 +21,8 @@ dataset_params:
 model:
   se3: True
   rnn:
-    rnn_layer: 32
-    rnn_hidden_size : 2
+    rnn_layer: 1
+    rnn_hidden_size : 64
     bias: True
     activation: "tanh" # rnn supports 'relu' and 'tanh' (default)
   fc:
