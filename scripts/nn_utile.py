@@ -186,7 +186,7 @@ class AUVRNNDeltaV(torch.nn.Module):
             - h0, shape (rnn_layers, k, rnn_hidden_size)
     '''
     def init_hidden(self, k, device):
-        return torch.zeros(self.rnn_layers, k, self.rnn_hidden_size).to(device)
+        return torch.zeros(self.rnn_layers, k, self.rnn_hidden_size, device=device)
 
 '''
     Performs a single integration step using pypose and velocity delta.
