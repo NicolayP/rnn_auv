@@ -1,12 +1,10 @@
 import torch
-torch.autograd.set_detect_anomaly(True)
+#torch.autograd.set_detect_anomaly(True)
 import pypose as pp
 import numpy as np
-import pandas as pd
-from tqdm import tqdm
+#from tqdm import tqdm
 from utile import tdtype, npdtype, to_euler, gen_imgs_3D
 import os
-from torch.utils.tensorboard import SummaryWriter
 
 #########################################
 #     Network and proxy definitons      #

@@ -1,6 +1,6 @@
 import torch
 from torch.nn.functional import normalize
-torch.autograd.set_detect_anomaly(True)
+#torch.autograd.set_detect_anomaly(True)
 
 from tqdm import tqdm
 import os
