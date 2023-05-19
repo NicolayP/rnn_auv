@@ -326,6 +326,7 @@ class AUVTraj(torch.nn.Module):
         h = None
         p = x[..., :7]
         v = x[..., 7:]
+        traj = torch.zeros(size=(k, tau, 7)).to(p.device)
         traj = pp.SE3(traj)
         traj_v = torch.zeros(size=(k, tau, 6)).to(p.device)
         traj_dv = torch.zeros(size=(k, tau, 6)).to(p.device)
@@ -605,8 +606,7 @@ class DatasetList3D(torch.utils.data.Dataset):
 
         dv = (dv-self.mean)/self.std
 
-        if self.se3:
-            traj = pp.SE3(traj)
+        traj = pp.SE3(traj)
 
         return x, u, traj, vel, dv
 

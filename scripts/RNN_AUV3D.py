@@ -363,9 +363,9 @@ if __name__ == "__main__":
         model = load_model(model, ckpt_path)
 
         print("Prediction...")
-        l = 200
+        l = 20
         s = time.time()
-        for i in range(l):
+        for i in tqdm(range(l)):
             traj = run(model, state, seq)
         e = time.time()
         print(f"Average Prediction Time: {(e-s)/l}")

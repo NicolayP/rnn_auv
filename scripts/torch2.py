@@ -43,7 +43,7 @@ def gen_data(b, device):
 def evaluate(mod, state, seq):
     return mod(state, seq)
 
-evaluate_opt = torch.compile(evaluate, fullgraph=True)
+evaluate_opt = torch.compile(evaluate)
 
 N_ITERS = 10
 BATCH_SIZE = 2000
