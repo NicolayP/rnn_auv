@@ -257,17 +257,8 @@ class AUVStep(torch.nn.Module):
         dv_unnormed = dv*self.std + self.mean
 
         t = pp.se3(self.dt*v).Exp()
-        if self.v_frame == "body":
-            x_next = x * t
-        elif self.v_frame == "world":
-            x_next = t * x
-
-        if self.v_frame == self.dv_frame:
-            v_next = v + dv_unnormed
-        elif self.v_frame == "world": # assumes that dv is in body frame.
-            v_next = v + x.Adj(dv_unnormed)
-        elif self.v_frame == "body": # assumes that dv is in world frame.
-            v_next = v + x.Inv().Adj(dv_unnormed)
+        x_next = x * t
+        v_next = v + x.Inv().Adj(dv_unnormed)
 
         return x_next, v_next, dv, h_next                     
 
@@ -335,23 +326,15 @@ class AUVTraj(torch.nn.Module):
         h = None
         p = x[..., :7]
         v = x[..., 7:]
-        traj = torch.zeros(size=(k, tau, 7)).to(p.device)
-        if self.se3:
-            traj = pp.SE3(traj)
+        traj = pp.SE3(traj)
         traj_v = torch.zeros(size=(k, tau, 6)).to(p.device)
         traj_dv = torch.zeros(size=(k, tau, 6)).to(p.device)
         
         x = pp.SE3(p).to(p.device)
         for i in range(tau):
             x_next, v_next, dv, h_next = self.step(x, v, U[:, i:i+1], h)
-
             x, v, h = x_next, v_next, h_next
-
-            if self.se3:
-                traj[:, i:i+1] = x
-            else:
-                traj[:, i:i+1] = x.data
-
+            traj[:, i:i+1] = x
             traj_v[:, i:i+1] = v
             traj_dv[:, i:i+1] = dv
         return traj, traj_v, traj_dv
