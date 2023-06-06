@@ -65,7 +65,7 @@ model = AUVTraj().to(device)
 def to_numpy(tensor):
     return tensor.detach().cpu().numpy() if tensor.requires_grad else tensor.cpu().numpy()
 
-onnx_model_filename = "./model_sim.onnx"
+onnx_model_filename = "./model_optimized.onnx"
 
 #####################  Normal ONNX run #######################
 opts = onnxruntime.SessionOptions()
