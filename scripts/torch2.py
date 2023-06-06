@@ -51,12 +51,14 @@ def gen_data(b, device):
 def evaluate(mod, state, seq):
     return mod(state, seq)
 
-evaluate_opt = torch.compile(evaluate)
+# evaluate_opt = torch.compile(evaluate)
 
 N_ITERS = 10
 BATCH_SIZE = 2000
 
-device = get_device(True)
+device_id = 4
+
+device = get_device(True, device_id)
 state, seq = gen_data(BATCH_SIZE, device)
 
 # Warm-up
@@ -78,19 +80,21 @@ opts = onnxruntime.SessionOptions()
 # opts.log_severity_level = 0
 # opts.log_verbosity_level= 0
 
-ort_session = onnxruntime.InferenceSession(onnx_model_filename, opts, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+ort_session = onnxruntime.InferenceSession(onnx_model_filename, opts, providers=[('CUDAExecutionProvider', {'device_id': device_id}), 'CPUExecutionProvider'])
 ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(state), ort_session.get_inputs()[1].name: to_numpy(seq)}
 
 
 #####################  Normal ONNX Bind #######################
-bind_session = onnxruntime.InferenceSession(onnx_model_filename, opts, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+bind_session = onnxruntime.InferenceSession(onnx_model_filename, opts, providers=[('CUDAExecutionProvider', {'device_id': device_id}), 'CPUExecutionProvider'])
+
 
 io_binding = bind_session.io_binding()
 
 io_binding.bind_input(
     name=ort_session.get_inputs()[0].name,
     device_type='cuda',
-    device_id=0,
+    device_id=device_id,
     element_type=np.float32,
     buffer_ptr=state.data_ptr(),
     shape=state.shape)
@@ -98,7 +102,7 @@ io_binding.bind_input(
 io_binding.bind_input(
     name=ort_session.get_inputs()[1].name,
     device_type='cuda',
-    device_id=0,
+    device_id=device_id,
     element_type=np.float32,
     buffer_ptr=seq.data_ptr(),
     shape=seq.shape)
@@ -106,10 +110,10 @@ io_binding.bind_input(
 io_binding.bind_output(
     name=ort_session.get_outputs()[0].name,
     device_type='cuda',
-    device_id=0,)
+    device_id=device_id)
 
 print("eager:", timed(lambda: evaluate(model, state, seq))[1])
-print("compile:", timed(lambda: evaluate_opt(model, state, seq))[1])
+# print("compile:", timed(lambda: evaluate_opt(model, state, seq))[1])
 print("onnx:", timed(lambda: ort_session.run(None, ort_inputs))[1])
 print("onnx bind:", timed(lambda: ort_session.run(None, ort_inputs))[1])
 
@@ -125,12 +129,12 @@ for i in range(N_ITERS):
 
 print("~" * 10)
 
-compile_times = []
-for i in range(N_ITERS):
-    _, compile_time = timed(lambda: evaluate_opt(model, state, seq))
-    compile_times.append(compile_time)
-    print(f"compile eval time {i}: {compile_time}")
-print("~" * 10)
+# compile_times = []
+# for i in range(N_ITERS):
+#     _, compile_time = timed(lambda: evaluate_opt(model, state, seq))
+#     compile_times.append(compile_time)
+#     print(f"compile eval time {i}: {compile_time}")
+# print("~" * 10)
 
 onnx_times = []
 for i in range(N_ITERS):
@@ -149,13 +153,13 @@ print("~" * 10)
 
 
 eager_med = np.median(eager_times)
-compile_med = np.median(compile_times)
+# compile_med = np.median(compile_times)
 onnx_med = np.median(onnx_times)
 onnx_bind_med = np.median(onnx_bind_times)
-speedup = eager_med / compile_med
+# speedup = eager_med / compile_med
 speedup_onnx = eager_med / onnx_med
 speedup_onnx_bind = eager_med / onnx_bind_med
-print(f"(eval) eager median: {eager_med}, compile median: {compile_med}, speedup: {speedup}x")
+# print(f"(eval) eager median: {eager_med}, compile median: {compile_med}, speedup: {speedup}x")
 print(f"(eval) eager median: {eager_med}, onnx median: {onnx_med}, speedup: {speedup_onnx}x")
 print(f"(eval) eager median: {eager_med}, onnx bind median: {onnx_bind_med}, speedup: {speedup_onnx_bind}x")
 print("~" * 10)
