@@ -6,7 +6,8 @@ scipy==1.10.1
 pyyaml==6.0
 tensorboard==2.13.0
 onnxruntime-gpu
-onnx
-onnxconverter-common
-onnxoptimizer
-transformers
+onnx==1.14.0
+onnxconverter-common==1.13.0
+onnxoptimizer==0.3.13
+transformers==4.29.2
+onnxsim==0.4.30
