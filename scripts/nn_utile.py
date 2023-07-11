@@ -6,6 +6,10 @@ import numpy as np
 from utile import tdtype, npdtype, to_euler, gen_imgs_3D
 import os
 
+from nn_pypose import *
+from typing import Optional
+
+
 #########################################
 #     Network and proxy definitons      #
 #########################################
@@ -45,7 +49,7 @@ class AUVRNNDeltaVProxy(torch.nn.Module):
                 shape [k, 1, 6]
             - hNext: set to None.
     '''
-    def forward(self, x, v, a, h0=None):
+    def forward(self, x, v, a, h0):
         self.i += 1
         return self._dv[:, self.i-1:self.i], None
 
@@ -159,16 +163,20 @@ class AUVRNNDeltaV(torch.nn.Module):
             - dv, the next velocity delta. Tensor, shape (k, 6, 1)
             - hN, the next rnn internal state. Shape (rnn_layers, k, rnn_hidden_size)
     '''
-    def forward(self, x, v, u, h0=None):
+    def forward(self, x, v, u, h0):
         k = x.shape[0]
-        r = x.rotation().matrix().flatten(start_dim=-2)
+        r = SE3.rotation(x)
+        r = SO3.matrix(r).flatten(start_dim=-2)
+
         input_seq = torch.concat([r, v, u], dim=-1)
 
         if h0 is None:
             h0 = self.init_hidden(k, x.device)
-
+        
         out, hN = self.rnn(input_seq, h0)
+
         dv = self.fc(out[:, 0])
+
         return dv[:, None], hN
 
     '''
@@ -251,14 +259,17 @@ class AUVStep(torch.nn.Module):
             - h_next, torch.Tensor. The next internal representation of
                 the RNN.
     '''
-    def forward(self, x, v, u, h0=None):
+    def forward(self, x, v, u, h0: torch.Tensor):
         dv, h_next = self.dv_pred(x, v, u, h0)
 
         dv_unnormed = dv*self.std + self.mean
-
-        t = pp.se3(self.dt*v).Exp()
+        dtv = self.dt*v
+        t = se3.Exp(dtv)
         x_next = x * t
-        v_next = v + x.Inv().Adj(dv_unnormed)
+
+        inv = SE3.Inv(x)
+        adj = SE3.Adj(inv, dv_unnormed) # returns: se3
+        v_next = v + adj
 
         return x_next, v_next, dv, h_next                     
 
@@ -323,15 +334,17 @@ class AUVTraj(torch.nn.Module):
     def forward(self, x, U):
         k = U.shape[0]
         tau = U.shape[1]
-        h = None
+        # h = None
+        h = torch.zeros(5, x.shape[0], 1, device=x.device)
         p = x[..., :7]
         v = x[..., 7:]
         traj = torch.zeros(size=(k, tau, 7)).to(p.device)
-        traj = pp.SE3(traj)
         traj_v = torch.zeros(size=(k, tau, 6)).to(p.device)
         traj_dv = torch.zeros(size=(k, tau, 6)).to(p.device)
+
+        x = p
         
-        x = pp.SE3(p).to(p.device)
+        # x = pp.SE3(p).to(p.device)
         for i in range(tau):
             x_next, v_next, dv, h_next = self.step(x, v, U[:, i:i+1], h)
             x, v, h = x_next, v_next, h_next
