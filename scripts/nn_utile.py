@@ -261,13 +261,14 @@ class AUVStep(torch.nn.Module):
     '''
     def forward(self, x, v, u, h0: torch.Tensor):
         dv, h_next = self.dv_pred(x, v, u, h0)
-
         dv_unnormed = dv*self.std + self.mean
-        dtv = self.dt*v
-        t = se3.Exp(dtv)
-        x_next = x * t
+
+        t = se3.Exp(self.dt*v)
+        x_next = SE3.Mul(x, t)
+
 
         inv = SE3.Inv(x)
+
         adj = SE3.Adj(inv, dv_unnormed) # returns: se3
         v_next = v + adj
 
@@ -334,7 +335,6 @@ class AUVTraj(torch.nn.Module):
     def forward(self, x, U):
         k = U.shape[0]
         tau = U.shape[1]
-        # h = None
         h = torch.zeros(5, x.shape[0], 1, device=x.device)
         p = x[..., :7]
         v = x[..., 7:]
@@ -343,10 +343,10 @@ class AUVTraj(torch.nn.Module):
         traj_dv = torch.zeros(size=(k, tau, 6)).to(p.device)
 
         x = p
-        
         # x = pp.SE3(p).to(p.device)
         for i in range(tau):
             x_next, v_next, dv, h_next = self.step(x, v, U[:, i:i+1], h)
+
             x, v, h = x_next, v_next, h_next
             traj[:, i:i+1] = x
             traj_v[:, i:i+1] = v

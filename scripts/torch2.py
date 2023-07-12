@@ -1,4 +1,5 @@
 import torch
+import click
 import numpy as np
 import warnings
 from nn_utile import AUVRNNDeltaV, AUVTraj, AUVStep
@@ -35,7 +36,7 @@ def gen_data(b, device):
 
 
 N_ITERS = 30
-BATCH_SIZE = 2000
+BATCH_SIZE = 3
 
 device_id = 0
 
@@ -52,10 +53,6 @@ def run_model(model_func, iters, tag):
     return times
 
 
-import torch
-import click
-
-
 @click.command()
 @click.option("--script_model", type=str, help="Operation to perform: save, run, all")
 @click.option("--onnx_model", type=str, help="Operation to perform: save, run, all")
@@ -67,7 +64,7 @@ def main(script_model, onnx_model):
         compiled = torch.jit.load(script_model)
     else:
         compiled = torch.jit.script(model, (state, seq))
-        compiled.save("scripted_model.pt")
+        # compiled.save("scripted_model.pt")
 
     if not onnx_model:
         onnx_model = "model.onnx"

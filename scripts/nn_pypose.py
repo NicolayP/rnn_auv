@@ -46,6 +46,16 @@ class SE3:
         test = to_1d_int_list(out_shape) + [dim]
         return out.view(test)
     
+    @staticmethod
+    def Mul(X, Y):
+        input_a, input_b, out_shape = broadcast_inputs(X, Y)
+        out = pp.SE3_Mul.apply(input_a, input_b)
+        dim = -1 
+        if out.numel() == 0:
+            dim = X.shape[-1]
+        test = to_1d_int_list(out_shape) + [dim]
+        return out.view(test)
+    
 def to_1d_int_list(x):
     result: List[int] = []
     for i in x:
