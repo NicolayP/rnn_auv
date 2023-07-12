@@ -3,3 +3,4 @@ test*
 train_log*
 
 __pycache__
+.vscode
