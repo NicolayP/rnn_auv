@@ -1,4 +1,3 @@
-from tqdm import tqdm
 import os
 from os import listdir, mkdir
 from os.path import isfile, join, exists
@@ -10,8 +9,10 @@ from scipy.spatial.transform import Rotation as R
 
 from utile import parse_param
 import yaml
-
+from tqdm import tqdm
 import argparse
+
+
 
 renameLabelsS = {'pose.pose.position.x': "x",
                  'pose.pose.position.y': "y",
@@ -26,13 +27,13 @@ renameLabelsS = {'pose.pose.position.x': "x",
                  'twist.twist.angular.x': "Sp",
                  'twist.twist.angular.y': "Sq",
                  'twist.twist.angular.z': "Sr"}
-
 renameLabelsA = {'wrench.force.x': "Fx",
                  'wrench.force.y': "Fy",
                  'wrench.force.z': "Fz",
                  'wrench.torque.x': "Tx",
                  'wrench.torque.y': "Ty",
                  'wrench.torque.z': "Tz"}
+
 
 def clean_bag(dataDir, outDir, n=500, freq=0.1, norms=None):
     '''
@@ -76,6 +77,7 @@ def clean_bag(dataDir, outDir, n=500, freq=0.1, norms=None):
                 continue
         pd.DataFrame(data=traj, columns=columns).to_csv(os.path.join(outDir, name + ".csv"))
 
+
 def traj_from_bag(path, rds, rda, freq, norms):
     '''
         Extracts a path from a rosbag and returns a
@@ -103,6 +105,7 @@ def traj_from_bag(path, rds, rda, freq, norms):
     traj = traj.set_index(np.arange(len(traj)))
     return traj
 
+
 def norm_actions(traj, norms):
     # Linear
     traj['Ux'] = norm_action(traj['Fx'], norms['x'])
@@ -113,6 +116,7 @@ def norm_actions(traj, norms):
     traj['Vy'] = norm_action(traj['Ty'], norms['q'])
     traj['Vz'] = norm_action(traj['Tz'], norms['r'])
     return traj
+
 
 def norm_actions2(traj, norms):
     # Linear
@@ -125,11 +129,13 @@ def norm_actions2(traj, norms):
     traj['Vz'] = norm_action2(traj['Tz'], norms['x'])
     return traj
 
+
 def norm_action(act, norm):
     # norm[0] is min
     # norm[1] is max
     # Norm between -1 and 1
     return (act - norm[0]) / (norm[1] - norm[0])*2 - 1
+
 
 def norm_action2(act, norm):
     # norm[0] is min in negative values
@@ -140,6 +146,7 @@ def norm_action2(act, norm):
     if act > 0:
         return act/norm[1]
     return -act/norm[0]
+
 
 def df_traj(dfs, rds, dfa, rda, freq):
     '''
@@ -225,6 +232,7 @@ def df_traj(dfs, rds, dfa, rda, freq):
     traj = pd.concat([trajS, trajA], axis=1)
     return traj
 
+
 def resample(df, rd, freq):
     '''
         Resamples and renames a dataframe with the 
@@ -252,6 +260,7 @@ def resample(df, rd, freq):
     traj = traj.resample('ms').interpolate('linear').resample(f'{freq}S').interpolate()
     return traj
 
+
 def get_body_vel(traj):
     rotBtoI = traj.loc[:, ['r00', 'r01', 'r02', 'r10', 'r11', 'r12', 'r20', 'r21', 'r22']].to_numpy().reshape(-1, 3, 3)
     rotItoB = np.transpose(rotBtoI, axes=(0, 2, 1))
@@ -263,6 +272,7 @@ def get_body_vel(traj):
 
     B_vel = np.concatenate([B_lin_vel, B_ang_vel], axis=-1)
     return B_vel
+
 
 def get_inertial_vel(traj):
     Sim_lin_vel = traj.loc[:, ['Su', 'Sv', 'Sw']].to_numpy()
@@ -287,6 +297,7 @@ def get_inertial_vel(traj):
 
     return I_vel
 
+
 def get_dv(traj):
     I_vel = traj.loc[:, ['Iu', 'Iv', 'Iw', 'Ip', 'Iq', 'Ir']].to_numpy()
     Idv = np.zeros(shape=(I_vel.shape))
@@ -299,31 +310,6 @@ def get_dv(traj):
 
     return Idv, Bdv
 
-def parse_arg():
-    parser = argparse.ArgumentParser(prog="clean_bags",
-                                     description="Cleans and resamples a set of rosbags\
-                                        and saves the into a csv file.")
-
-    parser.add_argument('-d', '--datadir', type=str, default=None,
-                        help="dir containing the bags to clean.")
-
-    parser.add_argument('-o', '--outdir', type=str, default=".",
-                        help="output directory for cleaned up bags.")
-
-    parser.add_argument("-f", "--frequency", type=float,
-                        help="Desired transition frequency in the\
-                              output bag(s). Default 0.1s. The frequency is expressed in seconds",
-                        default=0.1)
-
-    parser.add_argument('-s', '--steps', type=int,
-                        help='number of steps to keep in the bag', default=500)
-
-    parser.add_argument('-n', '--norm', type=str,
-                        help='yaml file contianing max and min thrusts for the \
-                        vehcile', default="")
-
-    args = parser.parse_args()
-    return args
 
 def compute_dv_stats(data_dir):
     files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
@@ -359,6 +345,34 @@ def compute_dv_stats(data_dir):
     
     with open(os.path.join(save_dir, "stats.yaml"), 'w+') as stream:
         yaml.dump(stats, stream)
+
+
+def parse_arg():
+    parser = argparse.ArgumentParser(prog="clean_bags",
+                                     description="Cleans and resamples a set of rosbags\
+                                        and saves the into a csv file.")
+
+    parser.add_argument('-d', '--datadir', type=str, default=None,
+                        help="dir containing the bags to clean.")
+
+    parser.add_argument('-o', '--outdir', type=str, default=".",
+                        help="output directory for cleaned up bags.")
+
+    parser.add_argument("-f", "--frequency", type=float,
+                        help="Desired transition frequency in the\
+                              output bag(s). Default 0.1s. The frequency is expressed in seconds",
+                        default=0.1)
+
+    parser.add_argument('-s', '--steps', type=int,
+                        help='number of steps to keep in the bag', default=500)
+
+    parser.add_argument('-n', '--norm', type=str,
+                        help='yaml file contianing max and min thrusts for the \
+                        vehcile', default="")
+
+    args = parser.parse_args()
+    return args
+
 
 def main():
     args = parse_arg()

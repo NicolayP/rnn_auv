@@ -2,13 +2,18 @@ import torch
 #torch.autograd.set_detect_anomaly(True)
 import pypose as pp
 import numpy as np
-#from tqdm import tqdm
+from tqdm import tqdm
 from utile import tdtype, npdtype, to_euler, gen_imgs_3D
 import os
 
-#########################################
-#     Network and proxy definitons      #
-#########################################
+
+
+###########################################
+#                                         #
+#      NETWORKS AND PROXY DEFINITIONS     #
+#                                         #
+###########################################
+
 '''
     Proxy for the RNN part of the network. Used to ensure that
     the integration using PyPose is correct.
@@ -48,6 +53,7 @@ class AUVRNNDeltaVProxy(torch.nn.Module):
     def forward(self, x, v, a, h0=None):
         self.i += 1
         return self._dv[:, self.i-1:self.i], None
+
 
 '''
     RNN predictor for $\delta v$.
@@ -186,6 +192,7 @@ class AUVRNNDeltaV(torch.nn.Module):
     def init_hidden(self, k, device):
         return torch.zeros(self.rnn_layers, k, self.rnn_hidden_size, device=device)
 
+
 '''
     Performs a single integration step using pypose and velocity delta.
 
@@ -253,14 +260,12 @@ class AUVStep(torch.nn.Module):
     '''
     def forward(self, x, v, u, h0=None):
         dv, h_next = self.dv_pred(x, v, u, h0)
-
         dv_unnormed = dv*self.std + self.mean
-
-        t = pp.se3(self.dt*v).Exp()
+        v_next = v + dv_unnormed
+        t = pp.se3(self.dt*v_next).Exp()
         x_next = x * t
-        v_next = v + x.Inv().Adj(dv_unnormed)
 
-        return x_next, v_next, dv, h_next                     
+        return x_next, v_next, dv, h_next
 
     '''
         Set the mean and variance of the input data.
@@ -274,6 +279,7 @@ class AUVStep(torch.nn.Module):
     def set_stats(self, mean, std):
         self.mean = mean
         self.std = std
+
 
 '''
     Performs full trajectory integration.
@@ -340,6 +346,26 @@ class AUVTraj(torch.nn.Module):
             traj_dv[:, i:i+1] = dv
         return traj, traj_v, traj_dv
 
+
+'''
+    Inits the weights of the neural network.
+
+    inputs:
+    -------
+        - m the neural network layer.
+'''
+def init_weights(m):
+    if isinstance(m, torch.nn.Linear):
+        torch.nn.init.xavier_uniform(m.weight)
+
+
+
+############################################
+#                                          #
+#              LOSS FUNCTIONS              #
+#                                          #
+############################################
+
 '''
     Compute the Left-Geodesic loss between two SE(3) poses.
 '''
@@ -365,8 +391,11 @@ class GeodesicLoss(torch.nn.Module):
         square = torch.pow(d, 2)
         return square
 
-'''
 
+'''
+    Trajectory loss object. This module can compute loss between two
+    trajectories represented by a sequence of SE3 Poses, Velocities and
+    Velocities Delta.
 '''
 class TrajLoss(torch.nn.Module):
     '''
@@ -489,7 +518,16 @@ class TrajLoss(torch.nn.Module):
         return self.alpha*t_l + self.beta*v_l + self.gamma*dv_l
 
 
-# DATASET FOR 3D DATA
+
+############################################
+#                                          #
+#          DATASET DEFINITIONS             #
+#                                          #
+############################################
+
+'''
+    Dataset for trajectories.
+'''
 class DatasetList3D(torch.utils.data.Dataset):
     '''
         Dataset Constructor.
@@ -498,9 +536,9 @@ class DatasetList3D(torch.utils.data.Dataset):
         -------
             - data_list: List, A list of pandas dataframe representing trajectories.
             - steps: Int, The number of steps to use for prediction.
-            - v_frame: String, The frame in which the velocity is represented (world or body)
-            - dv_frame: String, The frame in whicch the velocity delta is represented (world or body)
-            - rot: String, the representation used for rotations. (only quat supported at the moment.)
+            - v_frame: String, The frame in which the velocity is represented ('world' or 'body'), default 'body'
+            - dv_frame: String, The frame in which the velocity delta is represented ('world' or 'body'), default 'body'
+            - rot: String, the representation used for rotations. (only 'quat' supported at the moment.)
             - act_normed: Bool, whether or not to normalize the action before feeing them to the network.
             - se3: Bool, whether or not to use pypose as underlying library for the pose representation.
             - out_normed: Bool, whether or not to normalize the targets.
@@ -701,17 +739,13 @@ class DatasetList3D(torch.utils.data.Dataset):
     def get_stats(self):
         return self.mean, self.std
 
-'''
-    Inits the weights of the neural network.
 
-    inputs:
-    -------
-        - m the neural network layer.
-'''
-def init_weights(m):
-    if isinstance(m, torch.nn.Linear):
-        torch.nn.init.xavier_uniform(m.weight)
 
+############################################
+#                                          #
+#                 LOGGING                  #
+#                                          #
+############################################
 
 '''
     Computes the loss on an entire trajectory. If plot is true, it also plots the
@@ -787,8 +821,28 @@ def traj_loss(dataset, model, loss, tau, writer, step, device, mode="train", plo
         writer.add_image(f"{mode}/vel-{t}", v_img, step, dataformats="HWC")
         writer.add_image(f"{mode}/dv-{t}", dv_img, step, dataformats="HWC")
 
-# TRAINING AND VALIDATION
+
+
+############################################
+#                                          #
+#        TRAINING AND VALIDATION           #
+#                                          #
+############################################
+
+
 '''
+    Validation Step. Computes and logs different metrics to validate
+    the performances of the network.
+
+    input:
+    ------
+        - dataset: torch.utils.data.Dataset with a methods called get_trajs() that
+        returns full trajectory contained in the dataset.
+        - model: the dynamical model used for predicitons.
+        - loss: torch.function, the loss function used to measure the performance of the model.
+        - writer: torch.summarywriter. Writer used to log the data
+        - epoch: The current training epoch.
+        - device: string, the device to run the model on.
 '''
 def val_step(dataloader, model, loss, writer, epoch, device):
     torch.autograd.set_detect_anomaly(True)
@@ -811,6 +865,18 @@ def val_step(dataloader, model, loss, writer, epoch, device):
     traj_loss(dataloader.dataset, model, loss, tau, writer, epoch, device, "val", True)
 
 '''
+    Training Step. Update the networks and logs different training metrics.
+
+    input:
+    ------
+        - dataset: torch.utils.data.Dataset with a methods called get_trajs() that
+        returns full trajectory contained in the dataset.
+        - model: the dynamical model used for predicitons.
+        - loss: torch.function, the loss function used to measure the performance of the model.
+        - optim: torch.optimizer, the optimizer used to update the nn weights.
+        - writer: torch.summarywriter. Writer used to log the data
+        - epoch: The current training epoch.
+        - device: string, the device to run the model on.
 '''
 def train_step(dataloader, model, loss, optim, writer, epoch, device):
     #print("\n", "="*5, "Training", "="*5)
@@ -830,21 +896,35 @@ def train_step(dataloader, model, loss, optim, writer, epoch, device):
         optim.step()
 
         if writer is not None:
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    writer.add_histogram("train/" + name, param, epoch*size+batch*len(X))
+            # for name, param in model.named_parameters():
+            #     if param.requires_grad:
+            #         writer.add_histogram("train/" + name, param, epoch*size+batch*len(X))
             l_split = loss(traj, pred, vel, pred_v, dv, pred_dv, split=True)
             name = [["x", "y", "z", "vec_x", "vec_y", "vec_z"],
                 ["u", "v", "w", "p", "q", "r"],
                 ["du", "dv", "dw", "dp", "dq", "dr"]]
             for d in range(6):
-                for i in range(3): 
+                for i in range(3):
                     writer.add_scalar("train/split-loss-" + name[i][d], l_split[i][d], epoch*size+batch*len(X))
             writer.add_scalar("train/loss", l, epoch*size+batch*len(X))
 
     return l.item(), batch*len(X)
 
 '''
+    Train procedure for SE3 Neural Network.
+
+    inputs:
+    -------
+        - ds: pairs of datatsets. The first one will be used for training, the second
+        one is for validation.
+        - model: the dynamical model used for predicitons.
+        - loss: torch.function, the loss function used to measure the performance of the model.
+        - optim: torch.optimizer, the optimizer used to update the nn weights.
+        - writer: torch.summarywriter. Writer used to log the data
+        - epoch: The current training epoch.
+        - device: string, the device to run the model on.
+        - ckpt_dir: String, Directory to use to save the Model in.
+        - ckpt_check: Int, interval at which to save the model.
 '''
 def train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir=None, ckpt_steps=2):
     if writer is not None:

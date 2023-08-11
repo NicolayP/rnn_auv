@@ -31,7 +31,7 @@ def get_device(gpu=False, unit=0):
     return torch.device(f"cuda:{unit}" if use_cuda else "cpu")
 
 '''
-Runs a given RNN Model with a given input state and action sequence.
+    Runs a given RNN Model with a given input state and action sequence.
 '''
 def run(model, state, X):
     # TODO: disable all log, just keep the trajectory.
@@ -39,7 +39,7 @@ def run(model, state, X):
     return traj
 
 '''
-Load a RNN Model given a checkpoint file.
+    Load a RNN Model given a checkpoint file.
 '''
 def load_model(model, ckpt_path):
     ckpt = torch.load(ckpt_path)
@@ -60,6 +60,13 @@ def integrate():
     files = [os.path.join(dir, f) for f in os.listdir(dir)]
     trajs, trajs_plot, Ivels, Bvels, acts, Idvs, Bdvs = [], [], [], [], [], [], []
 
+    params = {}
+    params['dataset_params'] = {}
+    params['dataset_params']['v_frame'] = 'body'
+    params['dataset_params']['dv_frame'] = 'body'
+    params['model'] = {}
+    params['model']['se3'] = True
+
     for f in files:
         df = pd.read_csv(f)
         trajs.append(torch.Tensor(df[['x', 'y', 'z', 'qx', 'qy', 'qz', 'qw']].to_numpy())[None])
@@ -79,12 +86,11 @@ def integrate():
     Bdvs = torch.concat(Bdvs, dim=0).to(device)
 
     dv_pred = AUVRNNDeltaVProxy(Bdvs).to(device)
-    #dv_pred = AUVRNNDeltaV().to(device)
 
-    step = AUVStep(v_frame="body", dv_frame="body").to(device)
+    step = AUVStep(params).to(device)
     step.dv_pred = dv_pred
 
-    pred = AUVTraj(se3=True).to(device)
+    pred = AUVTraj(params).to(device)
     pred.step = step
 
     input = torch.concat([trajs[:, :1], Bvels[:, :1]], dim=-1)
@@ -132,109 +138,30 @@ def integrate():
     return
 
 
-def training(params, gpu_number=0):
-    nb_files = params["dataset_params"]["samples"]
-    data_dir = params["dataset_params"]["dir"]
-    stats_file = os.path.join(params["dataset_params"]["dir"], "stats", "stats.yaml")
-    stats = parse_param(stats_file)
-
-    files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
-    random.shuffle(files)
-
-    nb_files = min(len(files), nb_files)
-
-    files = random.sample(files, nb_files)
-
-    # split train and val in 70-30 ration
-    train_size = int(params["dataset_params"]["split"]*len(files))
-
-    train_files = files[:train_size]
-    val_files = files[train_size:]
-
-    print("Data size:  ", len(files))
-    print("Train size: ", len(train_files))
-    print("Val size:   ", len(val_files))
-
-
-    dfs_train = read_files(data_dir, train_files, "train")
-    dataset_train = DatasetList3D(
-        dfs_train,
-        steps=params["dataset_params"]["steps"],
-        v_frame=params["dataset_params"]["v_frame"],
-        dv_frame=params["dataset_params"]["dv_frame"],
-        act_normed=params["dataset_params"]["act_normed"],
-        se3=params["model"]["se3"],
-        out_normed=params["dataset_params"]["out_normed"],
-        stats=stats
-    )
-
-    dfs_val = read_files(data_dir, val_files, "val")
-    dataset_val = DatasetList3D(
-        dfs_val,
-        steps=params["dataset_params"]["steps"],
-        v_frame=params["dataset_params"]["v_frame"],
-        dv_frame=params["dataset_params"]["dv_frame"],
-        act_normed=params["dataset_params"]["act_normed"],
-        se3=params["model"]["se3"],
-        out_normed=params["dataset_params"]["out_normed"],
-        stats=stats
-    )
-
-    train_params = params["data_loader_params"]
-
-    ds = (
-        torch.utils.data.DataLoader(dataset_train, **train_params),
-        torch.utils.data.DataLoader(dataset_val, **train_params)
-    )
-
-    log_path = params["log"]["path"]
-    if params["log"]["stamped"]:
-        stamp = datetime.now().strftime("%Y.%m.%d-%H:%M:%S")
-        log_path = os.path.join(log_path, stamp)
-    
-    if not os.path.exists(log_path):
-        os.makedirs(log_path)
-
-    # TODO: save parameter file in log_path
-    save_param(os.path.join(log_path, "parameters.yaml"), params)
-
-    writer = SummaryWriter(log_path)
-
-    ckpt_dir = os.path.join(log_path, "train_ckpt")
-    if not os.path.exists(ckpt_dir):
-        os.makedirs(ckpt_dir)
-
-    device = get_device(True, gpu_number)
-    model = AUVTraj(params).to(device)
-    if params["dataset_params"]["out_normed"]:
-        mean, std = dataset_train.get_stats()
-        model.step.set_stats(torch.tensor(mean, dtype=tdtype).to(device),
-                            torch.tensor(std, dtype=tdtype).to(device))
-    # loss_fc = torch.nn.MSELoss().to(device)
-    loss_fc = TrajLoss(params["loss"]["traj"], params["loss"]["vel"], params["loss"]["dv"]).to(device)
-    optim = torch.optim.Adam(model.parameters(), lr=params["optim"]["lr"])
-    epochs = params["optim"]["epochs"]
-
-    train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir)
-
-
 def verify_ds():
     # Create dataset of 10-15 steps with one or two trajs.
     tau = 10
-    v_frame = "body"
-    dv_frame = "body"
     data_dir = "data/csv/sub"
+    
+    params = {}
+    params['dataset_params'] = {}
+    params['dataset_params']['v_frame'] = 'body'
+    params['dataset_params']['dv_frame'] = 'body'
+    params['model'] = {}
+    params['model']['se3'] = True
+
     files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
     dfs_verif = read_files(data_dir, files, "verif")
     verif_ds = DatasetList3D(
         dfs_verif,
         steps=tau,
-        v_frame=v_frame,
-        dv_frame=dv_frame,
-        se3=True
+        v_frame=params['dataset_params']['v_frame'],
+        dv_frame=params['dataset_params']['dv_frame'],
+        se3=True,
+        out_normed=False
     )
 
-    step = AUVStep(v_frame=v_frame, dv_frame=dv_frame)
+    step = AUVStep(params)
     pred = AUVTraj()
     pred.step = step
 
@@ -294,9 +221,79 @@ def verify_ds():
     plt.show()
 
 
+def training(params, gpu_number=0):
+    nb_files = params["dataset_params"]["samples"]
+    data_dir = params["dataset_params"]["dir"]
+    stats_file = os.path.join(params["dataset_params"]["dir"], "stats", "stats.yaml")
+    stats = parse_param(stats_file)
+
+    files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
+    random.shuffle(files)
+
+    nb_files = min(len(files), nb_files)
+
+    files = random.sample(files, nb_files)
+
+    # split train and val in 70-30 ration
+    train_size = int(params["dataset_params"]["split"]*len(files))
+
+    train_files = files[:train_size]
+    val_files = files[train_size:]
+
+    print("Data size:  ", len(files))
+    print("Train size: ", len(train_files))
+    print("Val size:   ", len(val_files))
+
+    train_params = params["data_loader_params"]
+
+    ds = []
+
+    for mode in ["train", "val"]:
+        dfs = read_files(data_dir, val_files, mode)
+        ds.append(torch.utils.data.DataLoader(
+                  DatasetList3D(
+                    dfs,
+                    steps=params["dataset_params"]["steps"],
+                    v_frame=params["dataset_params"]["v_frame"],
+                    dv_frame=params["dataset_params"]["dv_frame"],
+                    act_normed=params["dataset_params"]["act_normed"],
+                    se3=params["model"]["se3"],
+                    out_normed=params["dataset_params"]["out_normed"],
+                    stats=stats),
+                  **train_params))
+
+    log_path = params["log"]["path"]
+    if params["log"]["stamped"]:
+        stamp = datetime.now().strftime("%Y.%m.%d-%H:%M:%S")
+        log_path = os.path.join(log_path, stamp)
+    
+    if not os.path.exists(log_path):
+        os.makedirs(log_path)
+
+    save_param(os.path.join(log_path, "parameters.yaml"), params)
+    writer = SummaryWriter(log_path)
+
+    ckpt_dir = os.path.join(log_path, "train_ckpt")
+    if not os.path.exists(ckpt_dir):
+        os.makedirs(ckpt_dir)
+
+    device = get_device(True, gpu_number)
+    model = AUVTraj(params).to(device)
+    if params["dataset_params"]["out_normed"]:
+        mean, std = ds[0].get_stats()
+        model.step.set_stats(torch.tensor(mean, dtype=tdtype).to(device),
+                            torch.tensor(std, dtype=tdtype).to(device))
+    # loss_fc = torch.nn.MSELoss().to(device)
+    loss_fc = TrajLoss(params["loss"]["traj"], params["loss"]["vel"], params["loss"]["dv"]).to(device)
+    optim = torch.optim.Adam(model.parameters(), lr=params["optim"]["lr"])
+    epochs = params["optim"]["epochs"]
+
+    train(ds, model, loss_fc, optim, writer, epochs, device, ckpt_dir)
+
+
 def parse_arg():
-    parser = argparse.ArgumentParser(prog="RNN-AUV",
-                                     description="Trains AUV in 3D using pypose.")
+    parser = argparse.ArgumentParser(prog="rnn-auv",
+                                     description="Trains auv model using pypose.")
 
     parser.add_argument('-i', '--integrate', action=argparse.BooleanOptionalAction,
                         help="If set, this will run integration function on the dataset.\
@@ -337,7 +334,7 @@ def parse_arg():
     return args
 
 
-if __name__ == "__main__":
+def main():
     args = parse_arg()
 
     if args.integrate:
@@ -374,3 +371,7 @@ if __name__ == "__main__":
 
     params = parse_param(args.parameters)
     training(params, args.gpu)
+
+
+if __name__ == "__main__":
+    main()
